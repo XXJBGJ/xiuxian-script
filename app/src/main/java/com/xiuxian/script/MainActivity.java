@@ -10,10 +10,13 @@ import android.provider.Settings;
 import android.text.method.ScrollingMovementMethod;
 import android.view.View;
 import android.view.WindowManager;
+import android.widget.AdapterView;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -26,6 +29,8 @@ public class MainActivity extends Activity {
 
     private TextView tvStatus;
     private TextView tvLog;
+    private TextView tvGame;
+    private Spinner spGame;
     private ScrollView logScroll;
     private String logBuffer = "";
     /** 换行符（避免源码里写转义序列） */
@@ -43,6 +48,28 @@ public class MainActivity extends Activity {
         tvLog = (TextView) findViewById(R.id.tv_log);
         logScroll = (ScrollView) findViewById(R.id.log_scroll);
         tvLog.setMovementMethod(new ScrollingMovementMethod());
+
+        // ---- 游戏选择：换皮游戏靠包名区分，这里决定本次跑哪一个 ----
+        tvGame = (TextView) findViewById(R.id.tv_game);
+        spGame = (Spinner) findViewById(R.id.sp_game);
+        ArrayAdapter<String> gameAdapter = new ArrayAdapter<String>(this,
+                android.R.layout.simple_spinner_item, Games.labels(this));
+        gameAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        spGame.setAdapter(gameAdapter);
+        spGame.setSelection(Games.selectedIndex(this));
+        spGame.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                Games.setSelectedIndex(MainActivity.this, position);
+                refreshGameLine();
+                Logger.i("已切换游戏: " + Games.name(position) + " -> " + Games.pkg(position));
+            }
+
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {
+            }
+        });
+        refreshGameLine();
 
         // 日志监听：新日志到达就追加并滚到底部
         Logger.setListener(new Logger.Listener() {
@@ -109,6 +136,14 @@ public class MainActivity extends Activity {
                     openAccessibilitySettings();
                     return;
                 }
+                int gi = Games.selectedIndex(MainActivity.this);
+                if (!Games.isInstalled(MainActivity.this, gi)) {
+                    String miss = "选中的游戏未安装: " + Games.pkg(gi);
+                    toast(miss);
+                    Logger.e(miss);
+                    return;
+                }
+                Logger.i("本次运行目标: " + Games.name(gi) + " -> " + Games.pkg(gi));
                 s.startScript();
                 refreshStatus();
             }
@@ -140,7 +175,7 @@ public class MainActivity extends Activity {
         reloadLogs();
         refreshStatus();
         Logger.i("界面就绪；日志目录: " + Logger.logDirPath());
-        Logger.i("目标应用: 天途（未填写包名时按应用名匹配）");
+        Logger.i("启动方式: 按包名精确启动，避免换皮游戏串台");
     }
 
     @Override
@@ -196,6 +231,20 @@ public class MainActivity extends Activity {
         sb.append("Android: ").append(Build.VERSION.RELEASE)
                 .append("  /  日志: ").append(Logger.logDirPath());
         tvStatus.setText(sb.toString());
+    }
+
+    private void refreshGameLine() {
+        if (tvGame == null) {
+            return;
+        }
+        int i = Games.selectedIndex(this);
+        boolean ok = Games.isInstalled(this, i);
+        String s = "当前游戏: " + Games.name(i) + "  (" + Games.pkg(i) + ")  "
+                + (ok ? "[已安装]" : "[未安装，请先装到雷电里]");
+        tvGame.setText(s);
+        if (tvGame != null) {
+            tvGame.setTextColor(ok ? 0xFF1B7A1B : 0xFFB00020);
+        }
     }
 
     // ================= 权限入口 =================
