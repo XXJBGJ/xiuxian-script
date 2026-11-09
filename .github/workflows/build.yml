@@ -19,6 +19,15 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # 图标是二进制文件，无法直接粘贴进仓库，改存为 base64 文本，构建时还原
+      - name: 还原应用图标
+        run: |
+          test -f tools/app_icon.b64 || { echo "缺少 tools/app_icon.b64"; exit 1; }
+          mkdir -p app/src/main/res/mipmap-xxxhdpi
+          base64 -d tools/app_icon.b64 > app/src/main/res/mipmap-xxxhdpi/ic_launcher.jpg
+          ls -l app/src/main/res/mipmap-xxxhdpi/ic_launcher.jpg
+          file app/src/main/res/mipmap-xxxhdpi/ic_launcher.jpg || true
+
       # runner 自带 Android SDK，直接用它自带的 sdkmanager 装需要的组件
       # 不再使用 android-actions/setup-android，因为它会去找已被移除的 "tools" 包而失败
       - name: 安装 SDK 平台与构建工具
