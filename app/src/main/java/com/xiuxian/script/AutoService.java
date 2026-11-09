@@ -360,11 +360,25 @@ public class AutoService extends AccessibilityService {
         Logger.i("步骤 " + index + ": " + action);
         switch (action) {
             case "launch": {
-                String name = s.optString("appName", cfg.optString("appName", "天途"));
+                // 优先用步骤 / 配置里写死的包名；没写就用「当前选中的游戏」的包名。
+                // 全程只按包名精确启动，避免换皮游戏互相串台。
                 String pkg = s.optString("packageName", cfg.optString("packageName", ""));
-                boolean ok = AppFinder.launch(this, name, pkg);
+                if (pkg == null) {
+                    pkg = "";
+                }
+                pkg = pkg.trim();
+                boolean ok;
+                if (!pkg.isEmpty()) {
+                    Logger.i("按配置包名启动: " + pkg);
+                    ok = AppFinder.launchByPackage(this, pkg);
+                } else {
+                    String selName = Games.selectedName(this);
+                    String selPkg = Games.selectedPkg(this);
+                    Logger.i("按当前选中游戏启动: " + selName + " -> " + selPkg);
+                    ok = AppFinder.launchByPackage(this, selPkg);
+                }
                 if (!ok) {
-                    Logger.e("启动应用失败，流程中止");
+                    Logger.e("启动应用失败，流程中止（请确认该包名已安装）");
                     running = false;
                 }
                 break;
