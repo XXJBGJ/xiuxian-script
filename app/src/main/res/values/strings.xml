@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">修仙脚本工具</string>
+    <string name="accessibility_label">修仙脚本工具</string>
+    <string name="accessibility_desc">用于执行坐标点击、滑动、长按、返回等自动化操作。开启本服务后，回到“修仙脚本工具”点“启动脚本”即可运行。</string>
+</resources>
