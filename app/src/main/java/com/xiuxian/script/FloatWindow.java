@@ -207,12 +207,17 @@ public class FloatWindow {
             return;
         }
         AutoService s = AutoService.get();
+        // 带上当前选中的游戏名，跑起来一眼能确认没跑错游戏
+        String g = Games.selectedName(ctx);
+        if (g == null || g.isEmpty()) {
+            g = "未选择";
+        }
         if (s == null) {
-            status.setText("服务未开");
+            status.setText("服务未开 · " + g);
         } else if (s.isRunning()) {
-            status.setText("运行中");
+            status.setText("运行中 · " + g);
         } else {
-            status.setText("待机");
+            status.setText("待机 · " + g);
         }
     }
 
