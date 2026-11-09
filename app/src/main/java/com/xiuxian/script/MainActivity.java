@@ -79,6 +79,14 @@ public class MainActivity extends Activity {
             }
         });
 
+        Button btnLib = (Button) findViewById(R.id.btn_library);
+        btnLib.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                showLibrary();
+            }
+        });
+
         // 日志监听：新日志到达就追加并滚到底部
         Logger.setListener(new Logger.Listener() {
             @Override
@@ -239,6 +247,76 @@ public class MainActivity extends Activity {
         sb.append("Android: ").append(Build.VERSION.RELEASE)
                 .append("  /  日志: ").append(Logger.logDirPath());
         tvStatus.setText(sb.toString());
+    }
+
+    /**
+     * 安装包库：列出 GitHub Releases 里的历史版本 APK，点一项即可下载安装。
+     * 这样换手机后不用再到处找安装包。
+     */
+    private void showLibrary() {
+        final android.app.ProgressDialog pd = new android.app.ProgressDialog(this);
+        pd.setMessage("正在读取版本库...");
+        pd.setCancelable(false);
+        pd.show();
+
+        Installers.fetch(new Installers.Callback() {
+            @Override
+            public void onResult(java.util.List<Installers.Item> items, String error) {
+                try {
+                    pd.dismiss();
+                } catch (Throwable ignored) {
+                }
+                if (error != null) {
+                    new android.app.AlertDialog.Builder(MainActivity.this)
+                            .setTitle("读取版本库失败")
+                            .setMessage(error + "\n\n版本库地址：\nhttps://github.com/"
+                                    + Installers.OWNER + "/" + Installers.REPO + "/releases")
+                            .setPositiveButton("知道了", null)
+                            .show();
+                    return;
+                }
+                if (items == null || items.isEmpty()) {
+                    new android.app.AlertDialog.Builder(MainActivity.this)
+                            .setTitle("版本库里还没有安装包")
+                            .setMessage("把 APK 上传到 Releases 的 Assets 里，这里就会自动出现。\n\n"
+                                    + "https://github.com/" + Installers.OWNER + "/"
+                                    + Installers.REPO + "/releases")
+                            .setPositiveButton("知道了", null)
+                            .show();
+                    return;
+                }
+                final String[] rows = new String[items.size()];
+                for (int i = 0; i < items.size(); i++) {
+                    Installers.Item it = items.get(i);
+                    String head = it.tag.isEmpty() ? it.name : it.tag;
+                    rows[i] = head + "\n" + it.name + "  " + it.sizeText()
+                            + (it.published.isEmpty() ? "" : ("  " + it.published));
+                }
+                new android.app.AlertDialog.Builder(MainActivity.this)
+                        .setTitle("安装包库（共 " + items.size() + " 个）")
+                        .setItems(rows, new android.content.DialogInterface.OnClickListener() {
+                            @Override
+                            public void onClick(android.content.DialogInterface d, int which) {
+                                openDownload(items.get(which));
+                            }
+                        })
+                        .setNegativeButton("关闭", null)
+                        .show();
+            }
+        });
+    }
+
+    /** 交给浏览器/系统下载器下载 APK，用户装完即可在扫描列表里勾选 */
+    private void openDownload(Installers.Item it) {
+        try {
+            Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(it.url));
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(i);
+            toast("已发起下载: " + it.name);
+            Logger.i("下载安装包: " + it.name + " <- " + it.url);
+        } catch (Throwable t) {
+            toast("无法发起下载: " + t);
+        }
     }
 
     /**
