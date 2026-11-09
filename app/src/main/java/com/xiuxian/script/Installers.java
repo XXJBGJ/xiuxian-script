@@ -105,7 +105,9 @@ public class Installers {
                             for (int j = 0; j < assets.length(); j++) {
                                 JSONObject a = assets.getJSONObject(j);
                                 String nm = a.optString("name", "");
-                                if (!nm.toLowerCase().endsWith(".apk")) {
+                                // QQ / 微信保存下来的安装包常被改名成 xxx.apk.1、xxx.apk.zip，
+                                // 严格按 .apk 结尾判断会把它们全部漏掉，这里放宽为「名字里含 .apk」。
+                                if (!nm.toLowerCase().contains(".apk")) {
                                     continue;
                                 }
                                 Item it = new Item();
