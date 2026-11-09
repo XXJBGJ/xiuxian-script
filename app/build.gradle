@@ -1,0 +1,45 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.xiuxian.script'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.xiuxian.script"
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+        // 纯 Java 工程，不打 native 库，Android 7 与 Android 14 同一份 APK 都能装
+    }
+
+    buildTypes {
+        debug {
+            minifyEnabled false
+            // 关键：直接用 AGP 自动生成的 debug 签名，不需要你准备 keystore
+            signingConfig signingConfigs.debug
+        }
+        release {
+            minifyEnabled false
+            shrinkResources false
+            // 没有 keystore，release 也复用 debug 签名，保证能直接装
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+}
+
+dependencies {
+    // 第一版只用 Android 原生 API，不引入任何第三方库，避免版本冲突导致云端编译失败
+}
