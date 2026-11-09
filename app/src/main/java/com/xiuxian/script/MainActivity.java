@@ -71,6 +71,14 @@ public class MainActivity extends Activity {
         });
         refreshGameLine();
 
+        Button btnScan = (Button) findViewById(R.id.btn_scan);
+        btnScan.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                showScanDialog();
+            }
+        });
+
         // 日志监听：新日志到达就追加并滚到底部
         Logger.setListener(new Logger.Listener() {
             @Override
@@ -231,6 +239,61 @@ public class MainActivity extends Activity {
         sb.append("Android: ").append(Build.VERSION.RELEASE)
                 .append("  /  日志: ").append(Logger.logDirPath());
         tvStatus.setText(sb.toString());
+    }
+
+    /**
+     * 扫描设备已安装应用，勾选后加入游戏列表。
+     * 这样用户不必提供 APK、也不必自己去查包名。
+     */
+    private void showScanDialog() {
+        final java.util.List<Games.Game> cands = Games.scanInstalled(this);
+        if (cands.isEmpty()) {
+            toast("没有扫描到可启动的应用");
+            return;
+        }
+        final String[] names = new String[cands.size()];
+        final boolean[] checked = new boolean[cands.size()];
+        for (int i = 0; i < cands.size(); i++) {
+            Games.Game g = cands.get(i);
+            names[i] = g.name + "\n" + g.pkg + (g.note.isEmpty() ? "" : ("  ·  " + g.note));
+            checked[i] = Games.indexOfPkg(this, g.pkg) >= 0;
+        }
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("勾选要跑的游戏（共 " + cands.size() + " 个）")
+                .setMultiChoiceItems(names, checked,
+                        new android.content.DialogInterface.OnMultiChoiceClickListener() {
+                            @Override
+                            public void onClick(android.content.DialogInterface d, int which,
+                                                boolean isChecked) {
+                                checked[which] = isChecked;
+                            }
+                        })
+                .setPositiveButton("保存", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int w) {
+                        Games.applySelection(MainActivity.this, cands, checked);
+                        reloadGameSpinner();
+                        toast("已更新，共 " + Games.count() + " 个游戏");
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    /** 重新灌一次下拉数据（扫描保存后调用） */
+    private void reloadGameSpinner() {
+        if (spGame == null) {
+            return;
+        }
+        ArrayAdapter<String> a = new ArrayAdapter<String>(this,
+                android.R.layout.simple_spinner_item, Games.labels(this));
+        a.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        spGame.setAdapter(a);
+        int idx = Games.selectedIndex(this);
+        if (idx >= 0 && idx < Games.count()) {
+            spGame.setSelection(idx);
+        }
+        refreshGameLine();
     }
 
     private void refreshGameLine() {
