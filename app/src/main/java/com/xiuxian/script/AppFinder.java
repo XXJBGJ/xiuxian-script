@@ -72,6 +72,39 @@ public class AppFinder {
         return null;
     }
 
+    /**
+     * 只认包名，精确启动。
+     * 换皮游戏同玩法不同包名，必须走这里，绝不能按名称模糊匹配。
+     */
+    public static boolean launchByPackage(Context ctx, String pkg) {
+        if (ctx == null || pkg == null || pkg.trim().isEmpty()) {
+            Logger.e("包名为空，无法精确启动");
+            return false;
+        }
+        final String p = pkg.trim();
+        try {
+            ctx.getPackageManager().getPackageInfo(p, 0);
+        } catch (Throwable t) {
+            Logger.e("未安装该包名: " + p);
+            return false;
+        }
+        try {
+            Intent it = ctx.getPackageManager().getLaunchIntentForPackage(p);
+            if (it == null) {
+                Logger.e("该应用没有桌面启动入口: " + p);
+                return false;
+            }
+            it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                    | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+            ctx.startActivity(it);
+            Logger.i("已精确启动: " + p);
+            return true;
+        } catch (Throwable t) {
+            Logger.e("启动失败: " + t);
+            return false;
+        }
+    }
+
     /** 找到并用桌面入口启动 */
     public static boolean launch(Context ctx, String appName, String fallbackPkg) {
         String pkg = findPackage(ctx, appName, fallbackPkg);
