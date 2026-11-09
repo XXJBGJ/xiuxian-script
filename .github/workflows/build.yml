@@ -19,12 +19,19 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: 安装 Android 命令行工具
-        uses: android-actions/setup-android@v3
-
+      # runner 自带 Android SDK，直接用它自带的 sdkmanager 装需要的组件
+      # 不再使用 android-actions/setup-android，因为它会去找已被移除的 "tools" 包而失败
       - name: 安装 SDK 平台与构建工具
         run: |
-          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          SDK_ROOT="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
+          echo "SDK_ROOT=$SDK_ROOT"
+          SDKM=$(ls -d "$SDK_ROOT"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1)
+          echo "sdkmanager=$SDKM"
+          if [ -z "$SDKM" ]; then
+            echo "找不到 sdkmanager"; exit 1
+          fi
+          yes | "$SDKM" --licenses > /dev/null 2>&1 || true
+          "$SDKM" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
       - name: 准备 Gradle（固定 8.7，免去 gradle-wrapper.jar）
         uses: gradle/actions/setup-gradle@v4
