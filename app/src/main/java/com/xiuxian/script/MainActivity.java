@@ -113,6 +113,8 @@ public class MainActivity extends Activity {
         Button btnStart = (Button) findViewById(R.id.btn_start);
         Button btnStop = (Button) findViewById(R.id.btn_stop);
         Button btnClear = (Button) findViewById(R.id.btn_clearlog);
+        Button btnLogCopy = (Button) findViewById(R.id.btn_log_copy);
+        Button btnLogExport = (Button) findViewById(R.id.btn_log_export);
 
         btnService.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -187,6 +189,22 @@ public class MainActivity extends Activity {
                 logBuffer = "";
                 tvLog.setText("");
                 Logger.clear();
+            }
+        });
+
+        // 一键复制日志：直接粘到聊天窗口发给我，不用满手机找文件
+        btnLogCopy.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                copyLogToClipboard();
+            }
+        });
+
+        // 导出日志：存到手机「下载」目录，文件管理器里能直接看到
+        btnLogExport.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                exportLogToDownloads();
             }
         });
 
@@ -978,6 +996,95 @@ public class MainActivity extends Activity {
                 })
                 .setNegativeButton("取消", null)
                 .show();
+    }
+
+    /**
+     * 一键复制日志到剪贴板。
+     *
+     * 日志文件在 Android/data/com.xiuxian.script/files/logs 下面，
+     * Android 11 以后系统禁止文件管理器进入该目录，用户根本打不开。
+     * 所以这里直接复制，粘贴到聊天窗口即可。
+     */
+    private void copyLogToClipboard() {
+        try {
+            String text = Logger.fullText();
+            if (text == null || text.trim().length() == 0) {
+                toast("还没有日志，先点「启动脚本」跑一次");
+                return;
+            }
+            android.content.ClipboardManager cm = (android.content.ClipboardManager)
+                    getSystemService(Context.CLIPBOARD_SERVICE);
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("修仙脚本日志", text));
+            int lines = text.split(NL).length;
+            toast("已复制 " + lines + " 行日志，粘贴发我就行");
+            Logger.i("日志已复制到剪贴板（" + lines + " 行）");
+        } catch (Throwable t) {
+            toast("复制失败: " + t.getClass().getSimpleName());
+        }
+    }
+
+    /**
+     * 导出日志到手机「下载 / Download」目录下的 修仙脚本日志.txt。
+     *
+     * Android 10 及以上走系统媒体库（MediaStore.Downloads），不需要任何权限；
+     * Android 9 及以下走老的公共目录写入（清单里已声明 maxSdkVersion=28 的存储权限）。
+     * 导出后文件管理器的「下载」里就能看到，方便拷到电脑或发给我。
+     */
+    private void exportLogToDownloads() {
+        String text;
+        try {
+            text = Logger.fullText();
+        } catch (Throwable t) {
+            toast("读取日志失败");
+            return;
+        }
+        if (text == null || text.trim().length() == 0) {
+            toast("还没有日志，先点「启动脚本」跑一次");
+            return;
+        }
+        String name = "修仙脚本日志.txt";
+        try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                // Android 10+：写进系统下载目录，无需权限
+                android.content.ContentValues cv = new android.content.ContentValues();
+                cv.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name);
+                cv.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "text/plain");
+                cv.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH,
+                        android.os.Environment.DIRECTORY_DOWNLOADS);
+                android.net.Uri uri = getContentResolver().insert(
+                        android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+                if (uri == null) {
+                    toast("导出失败：无法创建文件");
+                    return;
+                }
+                java.io.OutputStream os = getContentResolver().openOutputStream(uri);
+                os.write(text.getBytes("UTF-8"));
+                os.flush();
+                os.close();
+                toast("已导出到「下载/" + name + "」");
+                Logger.i("日志已导出: 下载/" + name);
+            } else {
+                // Android 9 及以下：直接写公共下载目录
+                java.io.File dir = android.os.Environment.getExternalStoragePublicDirectory(
+                        android.os.Environment.DIRECTORY_DOWNLOADS);
+                if (!dir.exists()) {
+                    dir.mkdirs();
+                }
+                java.io.File out = new java.io.File(dir, name);
+                java.io.OutputStreamWriter w = new java.io.OutputStreamWriter(
+                        new java.io.FileOutputStream(out, false), "UTF-8");
+                w.write(text);
+                w.close();
+                toast("已导出到「下载/" + name + "」");
+                Logger.i("日志已导出: " + out.getAbsolutePath());
+            }
+        } catch (Throwable t) {
+            toast("导出失败: " + t.getClass().getSimpleName());
+            Logger.e("导出日志失败: " + t);
+            return;
+        }
+        // 导出完顺手复制一份，双保险
+        copyLogToClipboard();
     }
 
     private void toast(String msg) {
