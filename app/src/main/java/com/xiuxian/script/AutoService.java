@@ -170,8 +170,17 @@ public class AutoService extends AccessibilityService {
 
     // ================= 手势 =================
 
+    /**
+     * 派发一个手势。
+     *
+     * 注意：老实现只要 dispatchGesture 返回 true 就当作点击成功，
+     * 但系统「取消」手势时同样会返回 true —— 于是日志写着"点击成功"，
+     * 屏幕上却什么也没发生（这就是登录按钮点不动、还不报错的真正原因）。
+     * 现在按回调结果判定：只有 onCompleted 才算成功。
+     */
     private boolean dispatch(Path path, long durationMs) {
         final CountDownLatch latch = new CountDownLatch(1);
+        final boolean[] completed = new boolean[]{false};
         GestureDescription.Builder builder = new GestureDescription.Builder();
         builder.addStroke(new GestureDescription.StrokeDescription(path, 0, Math.max(1, durationMs)));
         boolean ok;
@@ -179,11 +188,13 @@ public class AutoService extends AccessibilityService {
             ok = dispatchGesture(builder.build(), new GestureResultCallback() {
                 @Override
                 public void onCompleted(GestureDescription gestureDescription) {
+                    completed[0] = true;
                     latch.countDown();
                 }
 
                 @Override
                 public void onCancelled(GestureDescription gestureDescription) {
+                    completed[0] = false;
                     latch.countDown();
                 }
             }, null);
@@ -199,13 +210,52 @@ public class AutoService extends AccessibilityService {
             latch.await(durationMs + 1000, TimeUnit.MILLISECONDS);
         } catch (InterruptedException ignored) {
         }
-        return true;
+        if (!completed[0]) {
+            Logger.w("手势被系统取消（多半被悬浮窗或键盘动画打断），本轮按失败处理");
+        }
+        return completed[0];
     }
 
     public boolean clickPx(int x, int y) {
-        Path p = new Path();
-        p.moveTo(x, y);
-        return dispatch(p, 60);
+        try {
+            Path p = new Path();
+            p.moveTo(x, y);
+            p.lineTo(x + 1, y);   // 部分机型不接受零长度路径，补一个极小位移
+            if (dispatch(p, 60)) {
+                return true;
+            }
+        } catch (Throwable t) {
+            Logger.w("无障碍点击异常: " + t.getClass().getSimpleName());
+        }
+        // 无障碍派发失败时用 root tap 兜底，保证真的点下去
+        try {
+            execRootOut("input tap " + x + " " + y);
+            Logger.i("改用 root tap 点击 " + x + "," + y);
+            return true;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    /**
+     * 用 root 注入一次真实触摸（input tap）。
+     *
+     * 为什么要这条通道：真机上「填字」是走 root 的 input text，能正常写进输入框，
+     * 说明 root 注入是通的；而无障碍 dispatchGesture 对这种游戏窗口经常被系统
+     * 静默取消 —— 日志写"点击成功"，屏幕上却毫无反应（登录按钮点不动就是这个）。
+     * 所以点完要看结果，没进去就换这条 root 通道再点一次。
+     */
+    private boolean clickPxRoot(int x, int y) {
+        try {
+            String r = execRootOut("input tap " + x + " " + y + "; echo OK");
+            boolean ok = r != null && r.contains("OK");
+            Logger.i(ok ? ("root 点击 " + x + "," + y)
+                    : ("root 点击失败(无 root?) " + x + "," + y));
+            return ok;
+        } catch (Throwable t) {
+            Logger.w("root 点击异常: " + t.getClass().getSimpleName());
+            return false;
+        }
     }
 
     /** 比例坐标点击，x / y 为 0~1 */
@@ -1168,8 +1218,8 @@ public class AutoService extends AccessibilityService {
             return s.optInt("ms", 1000);
         }
         if ("login".equals(a)) {
-            // 自适应定位 + 两次键盘等待 + 两次填字校验 + 点登录
-            return 2500L + s.optInt("tapDelay", 900) * 2 + s.optInt("waitAfter", 6000);
+            // 定位 + 两次键盘等待 + 两次填字校验 + 最多五轮"点完验证"
+            return 6000L + s.optInt("tapDelay", 900) * 2 + s.optInt("waitAfter", 6000);
         }
         if ("swipe".equals(a)) {
             return s.optLong("ms", 400) + 300;
@@ -1269,6 +1319,139 @@ public class AutoService extends AccessibilityService {
     private static final String[] PASS_KEYS =
             {"请输入密码", "输入密码", "密码", "验证码"};
 
+    /** 登录按钮上不该被点到的干扰文字（「账号登录」标签页也含"登录"二字） */
+    private static final String[] LOGIN_BAD = {
+            "账号登录", "帐号登录", "手机登录", "自动登录", "注册", "忘记", "客服", "切换"};
+
+    private static String nodeText(android.view.accessibility.AccessibilityNodeInfo n) {
+        if (n == null) {
+            return "";
+        }
+        CharSequence t = n.getText();
+        if (t != null && t.length() > 0) {
+            return t.toString().trim();
+        }
+        CharSequence d = n.getContentDescription();
+        return d == null ? "" : d.toString().trim();
+    }
+
+    private static void collectNodes(android.view.accessibility.AccessibilityNodeInfo n,
+                                     java.util.List<android.view.accessibility.AccessibilityNodeInfo> out,
+                                     int depth) {
+        if (n == null || depth > 60 || out.size() > 800) {
+            return;
+        }
+        out.add(n);
+        for (int i = 0; i < n.getChildCount(); i++) {
+            collectNodes(n.getChild(i), out, depth + 1);
+        }
+    }
+
+    private static boolean isBadLoginText(String t) {
+        if (t == null || t.length() == 0) {
+            return true;
+        }
+        for (String b : LOGIN_BAD) {
+            if (t.contains(b)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 点「登录」按钮（文字通道）。
+     *
+     * 关键坑：登录卡上方有「账号登录 / 手机登录」两个标签页，前者文字里也含"登录"。
+     * 老逻辑按「包含登录」去找，第一个命中的就是这个已经选中的标签页，
+     * 点下去毫无反应 —— 表现就是账号密码都填好了却永远不登录。
+     * 这里先找完全等于「登录」的节点，并排除账号登录/手机登录/注册等干扰项。
+     */
+    private boolean clickLoginByText() {
+        try {
+            android.view.accessibility.AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root != null) {
+                java.util.List<android.view.accessibility.AccessibilityNodeInfo> all =
+                        new java.util.ArrayList<android.view.accessibility.AccessibilityNodeInfo>();
+                collectNodes(root, all, 0);
+                for (int pass = 0; pass < 2; pass++) {
+                    for (android.view.accessibility.AccessibilityNodeInfo n : all) {
+                        String t = nodeText(n);
+                        if (isBadLoginText(t)) {
+                            continue;
+                        }
+                        boolean hit = (pass == 0) ? t.equals("登录")
+                                : (t.contains("登录") || t.contains("进入游戏"));
+                        if (!hit) {
+                            continue;
+                        }
+                        android.graphics.Rect r = new android.graphics.Rect();
+                        n.getBoundsInScreen(r);
+                        if (r.width() <= 0 || r.height() <= 0) {
+                            continue;
+                        }
+                        android.view.accessibility.AccessibilityNodeInfo cur = n;
+                        while (cur != null && !cur.isClickable()) {
+                            cur = cur.getParent();
+                        }
+                        if (cur != null && cur.performAction(
+                                android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK)) {
+                            Logger.i("点登录(无障碍): " + t);
+                            return true;
+                        }
+                        Logger.i("点登录(坐标): " + t + " " + r.centerX() + "," + r.centerY());
+                        return clickPx(r.centerX(), r.centerY());
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            Logger.w("无障碍点登录异常: " + t.getClass().getSimpleName());
+        }
+        java.util.List<UiNode> nodes = dumpUi();
+        for (UiNode n : nodes) {
+            String t = (n.text == null ? "" : n.text).trim();
+            if (t.equals("登录") && !isBadLoginText(t)) {
+                Logger.i("点登录(层级): " + n.cx() + "," + n.cy());
+                return clickPx(n.cx(), n.cy());
+            }
+        }
+        return false;
+    }
+
+    /** 登录卡是否仍然在屏幕上（在 = 还没进游戏） */
+    private boolean loginCardStill() {
+        try {
+            android.view.accessibility.AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root == null) {
+                return false;
+            }
+            java.util.List<android.view.accessibility.AccessibilityNodeInfo> all =
+                    new java.util.ArrayList<android.view.accessibility.AccessibilityNodeInfo>();
+            collectNodes(root, all, 0);
+            for (android.view.accessibility.AccessibilityNodeInfo n : all) {
+                String t = nodeText(n);
+                if (t.contains("请输入密码") || t.contains("请输入账号")
+                        || t.contains("忘记账号") || t.contains("账户注册")) {
+                    return true;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
+    /** 点完等一下，看登录卡有没有消失 */
+    private boolean waitLoginGone(int ms) {
+        long end = System.currentTimeMillis() + ms;
+        while (running && System.currentTimeMillis() < end) {
+            if (!loginCardStill()) {
+                return true;
+            }
+            sleep(250);
+        }
+        return !loginCardStill();
+    }
+
     /**
      * 自动登录：定位 -> 点账号框 -> 填账号 -> 点密码框 -> 填密码 -> 点登录。
      *
@@ -1361,32 +1544,42 @@ public class AutoService extends AccessibilityService {
         waitKeyboard(s.optInt("tapDelay", 900));
         Logger.i("密码填入: " + (typeInto(curPass, true) ? "成功" : "失败"));
 
-        // ---------- 登录按钮（五级兜底，必须尽力点下去）----------
-        boolean clicked = false;
+        // ---------- 登录按钮：点完必须验证，没进去就换招再点 ----------
+        boolean loggedIn = false;
+        String tplLogin = s.optString("tplLogin", "");
+
         if (ui != null && ui[5] > 0) {
-            clicked = clickPx(ui[4], ui[5]);
-            Logger.i("按金色块点登录: " + (clicked ? "成功" : "失败"));
+            Logger.i("按金色块点登录(" + ui[4] + "," + ui[5] + ")");
+            clickPx(ui[4], ui[5]);
+            loggedIn = waitLoginGone(1200);
         }
-        if (!clicked) {
-            String tpl = s.optString("tplLogin", "");
-            if (tpl.length() > 0) {
-                clicked = findImage(tpl, s.optDouble("tplTolerance", 0.82));
-                Logger.i("按模板图点登录: " + (clicked ? "命中" : "未命中"));
+        if (!loggedIn && running && ui != null && ui[5] > 0) {
+            Logger.i("无障碍点击没生效，改用 root 注入点登录");
+            clickPxRoot(ui[4], ui[5]);
+            loggedIn = waitLoginGone(1500);
+        }
+        if (!loggedIn && running) {
+            if (clickLoginByText()) {
+                loggedIn = waitLoginGone(1500);
             }
         }
-        if (!clicked) {
-            clicked = clickByKeyword(new String[]{"登录", "登 录", "立即登录", "进入游戏", "登入"});
-            Logger.i("按文字点登录: " + (clicked ? "命中" : "未命中"));
+        if (!loggedIn && running && tplLogin.length() > 0) {
+            Logger.i("按模板图点登录");
+            findImage(tplLogin, s.optDouble("tplTolerance", 0.82));
+            loggedIn = waitLoginGone(1200);
         }
-        if (!clicked) {
-            Logger.i("没识别到登录按钮，按比例坐标点击");
-            clicked = clickRatio((float) s.optDouble("btnX", 0.5),
-                    (float) s.optDouble("btnY", 0.554));
+        if (!loggedIn && running) {
+            Logger.i("按比例坐标点登录");
+            clickRatio((float) s.optDouble("btnX", 0.5),
+                    (float) s.optDouble("btnY", 0.592));
+            loggedIn = waitLoginGone(1200);
         }
-        if (!clicked && s.optBoolean("enterFallback", true)) {
-            Logger.i("登录按钮都未点中，改用回车提交");
+        if (!loggedIn && running && s.optBoolean("enterFallback", true)) {
+            Logger.i("改用回车提交登录");
             execRootOut("input keyevent 66");
+            loggedIn = waitLoginGone(1500);
         }
+        Logger.i("登录结果: " + (loggedIn ? "登录卡已消失，已进入游戏" : "登录卡仍在，可能账号密码有误"));
         Logger.i("登录流程总耗时 " + (System.currentTimeMillis() - tStart) + " ms");
         sleep(s.optInt("waitAfter", 6000));
         Logger.i("登录动作完成");
