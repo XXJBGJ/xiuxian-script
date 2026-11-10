@@ -13,6 +13,7 @@ import android.view.WindowManager;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -85,6 +86,14 @@ public class MainActivity extends Activity {
             @Override
             public void onClick(View v) {
                 showLibrary();
+            }
+        });
+
+        Button btnAcc = (Button) findViewById(R.id.btn_accounts);
+        btnAcc.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                showAccounts();
             }
         });
 
@@ -244,6 +253,10 @@ public class MainActivity extends Activity {
             int[] size = s.screenSize();
             sb.append("屏幕: ").append(size[0]).append(" x ").append(size[1]).append(NL);
         }
+        String sp = Games.selectedPkg(this);
+        sb.append("账号: 已勾选 ").append(Accounts.checkedCount(this, sp))
+                .append(" / 共 ").append(Accounts.count(this, sp))
+                .append(" 个（只会跑勾选的）").append(NL);
         sb.append("悬浮窗权限: ").append(canDrawOverlay() ? "已授予" : "未授予").append(NL);
         sb.append("Android: ").append(Build.VERSION.RELEASE)
                 .append("  /  日志: ").append(Logger.logDirPath());
@@ -575,6 +588,296 @@ public class MainActivity extends Activity {
                     public void onClick(android.content.DialogInterface d, int w) {
                         AutoService.saveConfig(MainActivity.this, AutoService.defaultConfigText());
                         toast("已恢复默认配置");
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    // ================= 账号管理 =================
+
+    /**
+     * 账号管理：先选游戏，再管这个游戏的账号。
+     * 天途和仙命决 7 个渠道各自一套，互不干扰；
+     * 账号密码用 & 隔开，一行一个，可多行批量粘贴。
+     */
+    private void showAccounts() {
+        final Spinner sp = new Spinner(this);
+        ArrayAdapter<String> ad = new ArrayAdapter<String>(this,
+                android.R.layout.simple_spinner_item, Games.labels(this));
+        ad.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        sp.setAdapter(ad);
+        int cur = Games.selectedIndex(this);
+        if (cur >= 0 && cur < Games.count()) {
+            sp.setSelection(cur);
+        }
+
+        final LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(12);
+        root.setPadding(pad, pad, pad, pad);
+
+        final TextView tvInfo = new TextView(this);
+        tvInfo.setTextSize(12);
+        tvInfo.setTextColor(0xFF5A6472);
+        tvInfo.setPadding(0, dp(6), 0, dp(6));
+        root.addView(tvInfo);
+
+        final LinearLayout listBox = new LinearLayout(this);
+        listBox.setOrientation(LinearLayout.VERTICAL);
+        final ScrollView sv = new ScrollView(this);
+        sv.addView(listBox, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        root.addView(sv, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(250)));
+
+        // 刷新列表：用数组包一层，方便按钮和勾选框回调里调用
+        final Runnable[] refresh = new Runnable[1];
+        refresh[0] = new Runnable() {
+            @Override
+            public void run() {
+                int gi = sp.getSelectedItemPosition();
+                if (gi < 0 || gi >= Games.count()) {
+                    return;
+                }
+                String pkg = Games.pkg(gi);
+                // 与首页选择保持一致：这里换游戏，首页也跟着换
+                Games.setSelectedIndex(MainActivity.this, gi);
+                listBox.removeAllViews();
+                java.util.List<Accounts.Acc> l = Accounts.list(MainActivity.this, pkg);
+                int ck = 0;
+                for (int i = 0; i < l.size(); i++) {
+                    if (l.get(i).checked) {
+                        ck++;
+                    }
+                }
+                tvInfo.setText("游戏: " + Games.name(gi) + "    包名: " + pkg + NL
+                        + "账号 " + l.size() + " 个，已勾选 " + ck
+                        + " 个（启动脚本只跑勾选的，没勾的直接跳过）");
+                if (l.isEmpty()) {
+                    TextView t = new TextView(MainActivity.this);
+                    t.setText("这个游戏还没有账号。" + NL
+                            + "点下面「添加账号」，按「账号&密码」一行一个填进去，"
+                            + NL + "一行写一组，可以一次粘贴很多行。");
+                    t.setTextSize(12);
+                    t.setTextColor(0xFF8A9099);
+                    t.setPadding(dp(4), dp(10), dp(4), dp(10));
+                    listBox.addView(t);
+                }
+                for (int i = 0; i < l.size(); i++) {
+                    listBox.addView(buildAccRow(pkg, i, refresh[0]));
+                }
+            }
+        };
+
+        sp.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                refresh[0].run();
+            }
+
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {
+            }
+        });
+
+        // ---- 第一排：添加账号 / 删除勾选 ----
+        LinearLayout row1 = new LinearLayout(this);
+        row1.setOrientation(LinearLayout.HORIZONTAL);
+        Button bAdd = new Button(this);
+        bAdd.setText("添加账号");
+        bAdd.setAllCaps(false);
+        bAdd.setTextSize(13);
+        bAdd.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                int gi = sp.getSelectedItemPosition();
+                showAddAccount(Games.pkg(gi), refresh[0]);
+            }
+        });
+        Button bDel = new Button(this);
+        bDel.setText("删除勾选");
+        bDel.setAllCaps(false);
+        bDel.setTextSize(13);
+        bDel.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                final int gi = sp.getSelectedItemPosition();
+                final String pkg = Games.pkg(gi);
+                new android.app.AlertDialog.Builder(MainActivity.this)
+                        .setTitle("删除勾选的账号")
+                        .setMessage("将删除「" + Games.name(gi) + "」里所有勾选的账号，删除后不可恢复。")
+                        .setPositiveButton("确认删除", new android.content.DialogInterface.OnClickListener() {
+                            @Override
+                            public void onClick(android.content.DialogInterface d, int w) {
+                                int n = Accounts.removeChecked(MainActivity.this, pkg);
+                                toast(n > 0 ? ("已删除 " + n + " 个账号") : "没有勾选任何账号");
+                                refresh[0].run();
+                                reloadGameSpinner();
+                            }
+                        })
+                        .setNegativeButton("取消", null)
+                        .show();
+            }
+        });
+        row1.addView(bAdd, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        row1.addView(bDel, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        root.addView(row1);
+
+        // ---- 第二排：全选 / 全不选 / 显示密码 ----
+        LinearLayout row2 = new LinearLayout(this);
+        row2.setOrientation(LinearLayout.HORIZONTAL);
+        Button bAll = new Button(this);
+        bAll.setText("全选");
+        bAll.setAllCaps(false);
+        bAll.setTextSize(13);
+        bAll.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Accounts.setAllChecked(MainActivity.this, Games.pkg(sp.getSelectedItemPosition()), true);
+                refresh[0].run();
+            }
+        });
+        Button bNone = new Button(this);
+        bNone.setText("全不选");
+        bNone.setAllCaps(false);
+        bNone.setTextSize(13);
+        bNone.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Accounts.setAllChecked(MainActivity.this, Games.pkg(sp.getSelectedItemPosition()), false);
+                refresh[0].run();
+            }
+        });
+        final Button bShow = new Button(this);
+        bShow.setText(Accounts.isShowPass() ? "隐藏密码" : "显示密码");
+        bShow.setAllCaps(false);
+        bShow.setTextSize(13);
+        bShow.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Accounts.setShowPass(!Accounts.isShowPass());
+                bShow.setText(Accounts.isShowPass() ? "隐藏密码" : "显示密码");
+                refresh[0].run();
+            }
+        });
+        row2.addView(bAll, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        row2.addView(bNone, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        row2.addView(bShow, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        root.addView(row2);
+
+        TextView tip = new TextView(this);
+        tip.setText("账号密码只保存在这台手机/模拟器里，不上传。换设备需要重新输入。");
+        tip.setTextSize(11);
+        tip.setTextColor(0xFF8A9099);
+        tip.setPadding(0, dp(8), 0, 0);
+        root.addView(tip);
+
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("账号管理")
+                .setView(root)
+                .setNegativeButton("关闭", null)
+                .show();
+        refresh[0].run();
+    }
+
+    /** 一行一个账号：勾选框 + 序号.账号 + 删除按钮 */
+    private View buildAccRow(final String pkg, final int idx, final Runnable refresh) {
+        java.util.List<Accounts.Acc> l = Accounts.list(this, pkg);
+        if (idx < 0 || idx >= l.size()) {
+            return new View(this);
+        }
+        final Accounts.Acc a = l.get(idx);
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(6), dp(6), dp(6), dp(6));
+
+        android.graphics.drawable.GradientDrawable bg =
+                new android.graphics.drawable.GradientDrawable();
+        bg.setColor(0xFFF7F8FA);
+        bg.setCornerRadius(dp(8));
+        bg.setStroke(dp(1), 0xFFE4E7EC);
+        row.setBackgroundDrawable(bg);
+        LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        rlp.bottomMargin = dp(6);
+        row.setLayoutParams(rlp);
+
+        final CheckBox cb = new CheckBox(this);
+        cb.setChecked(a.checked);
+        // 先设状态再挂监听，避免刷新时自己触发自己
+        cb.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(android.widget.CompoundButton b, boolean isChecked) {
+                Accounts.setChecked(MainActivity.this, pkg, idx, isChecked);
+                cb.post(refresh);
+            }
+        });
+        row.addView(cb, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        TextView tv = new TextView(this);
+        tv.setText((idx + 1) + ". " + a.show());
+        tv.setTextSize(14);
+        tv.setTextColor(a.checked ? 0xFF1F2328 : 0xFF8A9099);
+        tv.setPadding(dp(4), 0, dp(4), 0);
+        row.addView(tv, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        Button del = new Button(this);
+        del.setText("删除");
+        del.setAllCaps(false);
+        del.setTextSize(12);
+        del.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Accounts.remove(MainActivity.this, pkg, idx);
+                toast("已删除 1 个账号");
+                refresh.run();
+                reloadGameSpinner();
+            }
+        });
+        row.addView(del, new LinearLayout.LayoutParams(dp(64),
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        return row;
+    }
+
+    /** 添加账号：多行文本框，一行一个「账号&密码」，可整段粘贴 */
+    private void showAddAccount(final String pkg, final Runnable refresh) {
+        final EditText et = new EditText(this);
+        et.setTextSize(14);
+        et.setSingleLine(false);
+        et.setMinLines(4);
+        et.setGravity(android.view.Gravity.TOP | android.view.Gravity.START);
+        et.setHint("一行一个，格式：账号&密码" + NL + "13800000000&abc123"
+                + NL + "13900000000&def456");
+        et.setPadding(dp(10), dp(10), dp(10), dp(10));
+
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("添加账号")
+                .setView(et)
+                .setPositiveButton("保存", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int w) {
+                        int n = Accounts.addOrUpdate(MainActivity.this, pkg,
+                                et.getText().toString());
+                        if (n > 0) {
+                            toast("已保存 " + n + " 条账号");
+                        } else {
+                            toast("没识别到账号，格式应为 账号&密码");
+                        }
+                        refresh.run();
+                        reloadGameSpinner();
                     }
                 })
                 .setNegativeButton("取消", null)
