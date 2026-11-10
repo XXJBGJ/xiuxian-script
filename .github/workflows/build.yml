@@ -8,6 +8,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: 拉取代码
@@ -67,3 +69,17 @@ jobs:
           name: 修仙脚本工具
           path: dist/修仙脚本工具.apk
           if-no-files-found: error
+
+      # 额外发一个 Release：手机上点链接就能直接下载，不用登录 GitHub
+      - name: 发布到 Release（可直接下载）
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: 修仙脚本工具 构建 ${{ github.run_number }}
+          body: |
+            自动构建产物，点下面的 apk 直接下载安装。
+
+            - 适配任意分辨率/DPI（优先按界面文字与颜色识别，不依赖固定坐标）
+            - 支持按游戏分别管理账号，勾选后逐个运行
+          files: dist/修仙脚本工具.apk
+          make_latest: true
