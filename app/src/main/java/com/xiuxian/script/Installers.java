@@ -19,13 +19,17 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 安装包库：从 GitHub Releases 自动列出所有历史版本 APK，点一下就能下载。
+ * 安装包库：从 GitHub Releases 自动列出游戏安装包，点一下就能下载。
  *
  * 中文名说明：
  * GitHub 的附件文件名只接受 ASCII，汉字会被服务端直接剥离，
  * 所以线上文件名只能是 tiantu-pupu-1.0.4.apk 这种拼音。
  * 中文显示名与中文下载文件名都放在本类的 MAP 里做映射，
  * 界面上看到的是中文，存到手机里的文件也是中文名。
+ *
+ * 只收录 MAP 里登记的游戏安装包：
+ * 脚本自身的历次构建产物（xiuxian-script.apk、default.apk 等）一律不显示，
+ * 所以安装包库不会再一次出现十几条同名英文包。
  */
 public class Installers {
 
@@ -48,7 +52,24 @@ public class Installers {
             {"xianmingjue-xiaomi", "仙命决·小米", "1.2.4", "com.gm.xmj.mi"},
     };
 
+    /** 是否为本库登记的游戏安装包（脚本自身产物返回 false） */
+    public static boolean isGameInstaller(String fileName) {
+        return mapIndex(fileName) < MAP.length;
+    }
+
+    /** 在 MAP 中的位置，未登记返回 MAP.length */
+    private static int mapIndex(String fileName) {
+        String n = fileName == null ? "" : fileName.toLowerCase();
+        for (int i = 0; i < MAP.length; i++) {
+            if (n.contains(MAP[i][0])) {
+                return i;
+            }
+        }
+        return MAP.length;
+    }
+
     public static class Item {
+
         public String tag = "";
         public String title = "";
         public String name = "";
@@ -162,8 +183,7 @@ public class Installers {
         } catch (Throwable t) {
             Logger.e("下载失败: " + t);
             try {
-                android.content.Intent i = new android.content.Intent(android.content.Intent.ACTION_VIEW,
-                        Uri.parse(it.url));
+                android.content.Intent i = new android.content.Intent(android.content.Intent.ACTION_VIEW, Uri.parse(it.url));
                 i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
                 ctx.startActivity(i);
             } catch (Throwable ignored) {
@@ -172,7 +192,8 @@ public class Installers {
     }
 
     /**
-     * 读取 Releases 清单。网络请求放子线程，回调切回主线程。
+     * 读取 Releases 清单，只保留游戏安装包（每个渠道取最新一份）。
+     * 网络请求放子线程，回调切回主线程。
      */
     public static void fetch(final Callback cb) {
         final Handler ui = new Handler(Looper.getMainLooper());
@@ -223,6 +244,11 @@ public class Installers {
                                 if (nm.toLowerCase().indexOf(".apk") < 0) {
                                     continue;
                                 }
+                                // 关键过滤：只留 MAP 里登记的游戏安装包，
+                                // 脚本自身的构建产物（xiuxian-script.apk / default.apk）不显示
+                                if (!isGameInstaller(nm)) {
+                                    continue;
+                                }
                                 Item it = new Item();
                                 it.tag = tag;
                                 it.title = title;
@@ -233,6 +259,21 @@ public class Installers {
                                 out.add(it);
                             }
                         }
+                        // 按 MAP 顺序排好，同一渠道只保留第一份（Releases 按时间倒序，第一份即最新）
+                        java.util.Collections.sort(out, new java.util.Comparator<Item>() {
+                            @Override
+                            public int compare(Item a, Item b) {
+                                return mapIndex(a.name) - mapIndex(b.name);
+                            }
+                        });
+                        List<Item> uniq = new ArrayList<Item>();
+                        java.util.HashSet<String> seen = new java.util.HashSet<String>();
+                        for (Item it : out) {
+                            if (seen.add(it.label())) {
+                                uniq.add(it);
+                            }
+                        }
+                        out = uniq;
                     }
                 } catch (Throwable t) {
                     err = "网络失败: " + t.getClass().getSimpleName();
