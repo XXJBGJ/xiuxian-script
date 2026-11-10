@@ -6,6 +6,10 @@
 
     <!-- 安装包库：读取 GitHub Releases 版本清单 -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 安装包库：Android 9 及以下把 APK 存进公共下载目录需要写权限 -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
     <!-- 悬浮窗 -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
