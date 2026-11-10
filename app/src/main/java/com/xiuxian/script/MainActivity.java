@@ -155,35 +155,12 @@ public class MainActivity extends Activity {
         btnStart.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                AutoService s = AutoService.get();
-                if (s == null) {
-                    toast("请先开启无障碍服务");
-                    Logger.e("无障碍服务未连接，无法启动");
-                    openAccessibilitySettings();
+                // 两个权限缺一不可：无障碍 + 悬浮窗。
+                // 缺哪个就自动跳到哪个授权页，用户点完返回本界面会自动接着启动。
+                if (!ensurePermissionsThenStart()) {
                     return;
                 }
-                int gi = Games.selectedIndex(MainActivity.this);
-                if (!Games.isInstalled(MainActivity.this, gi)) {
-                    String miss = "选中的游戏未安装: " + Games.pkg(gi);
-                    toast(miss);
-                    Logger.e(miss);
-                    return;
-                }
-                Logger.i("本次运行目标: " + Games.name(gi) + " -> " + Games.pkg(gi));
-                // 启动脚本时自动把进度悬浮窗叫出来（有权限才弹，没权限不打断流程）
-                if (canDrawOverlay()) {
-                    try {
-                        FloatWindow fw = FloatWindow.get(MainActivity.this);
-                        fw.show();
-                        fw.expand();
-                    } catch (Throwable t) {
-                        Logger.w("悬浮窗自动显示失败: " + t);
-                    }
-                } else {
-                    Logger.w("未授予悬浮窗权限，本次不显示进度面板");
-                }
-                s.startScript();
-                refreshStatus();
+                startScriptNow();
             }
         });
 
@@ -224,6 +201,24 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         refreshStatus();
+        // 从授权页返回：权限齐了就自动接着启动，中途还需补另一个权限时继续跳
+        if (pendingStart) {
+            boolean acc = isAccessibilityOn() || AutoService.get() != null;
+            boolean overlay = canDrawOverlay();
+            if (acc && overlay) {
+                pendingStart = false;
+                pendingPerm = "";
+                Logger.i("两个权限都已就绪，自动开始启动脚本");
+                startScriptNow();
+            } else if ("acc".equals(pendingPerm) && acc && !overlay) {
+                // 无障碍刚开好，还差悬浮窗，自动跳第二个授权页
+                pendingPerm = "overlay";
+                toast("还差「显示在应用上层」，已自动跳转");
+                requestOverlayPermission();
+            } else if (acc && overlay) {
+                pendingStart = false;
+            }
+        }
     }
 
     // ================= 日志 =================
@@ -545,6 +540,91 @@ public class MainActivity extends Activity {
         } catch (Throwable t) {
             toast("无法打开无障碍设置: " + t);
         }
+    }
+
+    /**
+     * 无障碍是否已开启：直接读系统里的已启用服务列表，
+     * 比「服务是否已连接」更准，刚授权返回时也能立刻判断。
+     */
+    private boolean isAccessibilityOn() {
+        try {
+            String want = getPackageName() + "/" + AutoService.class.getName();
+            String on = Settings.Secure.getString(getContentResolver(),
+                    Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+            if (on == null) {
+                return false;
+            }
+            String lower = on.toLowerCase();
+            return lower.contains(want.toLowerCase())
+                    || lower.contains((getPackageName() + "/." + AutoService.class.getSimpleName()).toLowerCase());
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** 权限自动补齐后要继续启动的标记 */
+    private boolean pendingStart = false;
+    /** 刚跳转过哪个授权页，用于返回后判断是否继续 */
+    private String pendingPerm = "";
+
+    /**
+     * 启动前检查两个权限：无障碍 + 悬浮窗，缺哪个就自动跳对应授权页。
+     * 用户授权完返回本界面，onResume 会自动接着启动，不用再点一次。
+     *
+     * @return true 表示两个权限都齐了，可以立即启动
+     */
+    private boolean ensurePermissionsThenStart() {
+        AutoService s = AutoService.get();
+        boolean acc = isAccessibilityOn() || s != null;
+        boolean overlay = canDrawOverlay();
+
+        if (acc && overlay) {
+            return true;
+        }
+        pendingStart = true;
+
+        if (!acc) {
+            pendingPerm = "acc";
+            Logger.w("未开启无障碍，已自动跳到无障碍设置页，请打开本服务后返回");
+            toast("请开启「修仙脚本工具」无障碍，返回后自动继续");
+            openAccessibilitySettings();
+            return false;
+        }
+        // 无障碍已开，只差悬浮窗
+        pendingPerm = "overlay";
+        Logger.w("未授予悬浮窗权限，已自动跳到授权页，请打开后返回");
+        toast("请允许「显示在应用上层」，返回后自动继续");
+        requestOverlayPermission();
+        return false;
+    }
+
+    /** 真正启动脚本：确认游戏已安装，叫出浮窗，然后开始 */
+    private void startScriptNow() {
+        AutoService s = AutoService.get();
+        if (s == null) {
+            toast("请先开启无障碍服务");
+            Logger.e("无障碍服务未连接，无法启动");
+            openAccessibilitySettings();
+            return;
+        }
+        int gi = Games.selectedIndex(MainActivity.this);
+        if (!Games.isInstalled(MainActivity.this, gi)) {
+            String miss = "选中的游戏未安装: " + Games.pkg(gi);
+            toast(miss);
+            Logger.e(miss);
+            return;
+        }
+        Logger.i("本次运行目标: " + Games.name(gi) + " -> " + Games.pkg(gi));
+        // 启动脚本时自动把进度悬浮窗叫出来
+        try {
+            FloatWindow fw = FloatWindow.get(MainActivity.this);
+            fw.show();
+            fw.expand();
+        } catch (Throwable t) {
+            Logger.w("悬浮窗自动显示失败: " + t);
+        }
+        s.startScript();
+        refreshStatus();
     }
 
     private boolean canDrawOverlay() {
