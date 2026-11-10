@@ -44,6 +44,14 @@
         android:text="安装包库（各游戏历史版本）"
         android:textSize="13sp" />
 
+    <Button
+        android:id="@+id/btn_accounts"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="6dp"
+        android:text="账号管理（按游戏分别保存）"
+        android:textSize="13sp" />
+
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
