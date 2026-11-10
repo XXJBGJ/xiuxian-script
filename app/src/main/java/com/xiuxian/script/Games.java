@@ -294,3 +294,290 @@ public class Games {
         Logger.i("游戏列表已更新，共 " + cur.size() + " 个");
     }
 }
+
+/**
+ * 账号管理：按「包名」给每个游戏单独存一套账号密码。
+ *
+ * 要点：
+ * 1) 天途、仙命决的 7 个渠道互相独立，切游戏就是切另一套账号；
+ * 2) 账号密码用 & 隔开，例如  13800000000&abc123  ；
+ * 3) 只存在本机 SharedPreferences 里，不上传、不同步；
+ *    清单里 allowBackup=false，所以换手机后不会跟着账号恢复，必须重新输入；
+ * 4) 每条账号带勾选状态，启动脚本只跑勾选的那些，没勾的直接跳过。
+ */
+class Accounts {
+
+    private static final String PREFS = "xiuxian_accounts";
+
+    /** 账号与密码的分隔符 */
+    public static final String SEP = "&";
+
+    /** 界面是否明文显示密码（只在内存里，不落盘） */
+    private static boolean showPass = false;
+
+    public static boolean isShowPass() {
+        return showPass;
+    }
+
+    public static void setShowPass(boolean b) {
+        showPass = b;
+    }
+
+    public static class Acc {
+        public String user = "";
+        public String pass = "";
+        public boolean checked = false;
+
+        public Acc() {
+        }
+
+        public Acc(String u, String p, boolean c) {
+            user = u == null ? "" : u;
+            pass = p == null ? "" : p;
+            checked = c;
+        }
+
+        /** 还原成 账号&密码 一行文本 */
+        public String raw() {
+            return user + SEP + pass;
+        }
+
+        /** 列表里显示的文本 */
+        public String show() {
+            if (pass.length() == 0) {
+                return user;
+            }
+            if (showPass) {
+                return user + "  " + pass;
+            }
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < pass.length(); i++) {
+                sb.append('*');
+            }
+            return user + "  " + sb.toString();
+        }
+    }
+
+    private static SharedPreferences sp(Context ctx) {
+        return ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+    }
+
+    // ================= 读写 =================
+
+    /** 读某个游戏（包名）的账号列表；读不到就返回空表 */
+    public static List<Acc> list(Context ctx, String pkg) {
+        List<Acc> out = new ArrayList<Acc>();
+        if (ctx == null || pkg == null || pkg.length() == 0) {
+            return out;
+        }
+        try {
+            String s = sp(ctx).getString(keyOf(pkg), null);
+            if (s == null || s.length() == 0) {
+                return out;
+            }
+            JSONArray arr = new JSONArray(s);
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject o = arr.getJSONObject(i);
+                Acc a = new Acc();
+                a.user = o.optString("u", "");
+                a.pass = o.optString("p", "");
+                a.checked = o.optBoolean("c", false);
+                if (a.user.length() > 0) {
+                    out.add(a);
+                }
+            }
+        } catch (Throwable t) {
+            Logger.e("读取账号失败: " + t);
+        }
+        return out;
+    }
+
+    /** 写回某个游戏的账号列表 */
+    public static void save(Context ctx, String pkg, List<Acc> list) {
+        if (ctx == null || pkg == null || pkg.length() == 0) {
+            return;
+        }
+        try {
+            JSONArray arr = new JSONArray();
+            if (list != null) {
+                for (Acc a : list) {
+                    if (a == null || a.user.length() == 0) {
+                        continue;
+                    }
+                    JSONObject o = new JSONObject();
+                    o.put("u", a.user);
+                    o.put("p", a.pass);
+                    o.put("c", a.checked);
+                    arr.put(o);
+                }
+            }
+            sp(ctx).edit().putString(keyOf(pkg), arr.toString()).apply();
+        } catch (Throwable t) {
+            Logger.e("保存账号失败: " + t);
+        }
+    }
+
+    private static String keyOf(String pkg) {
+        return "acc_" + pkg.replace('.', '_');
+    }
+
+    // ================= 解析 =================
+
+    /**
+     * 解析一行「账号&密码」。
+     * 只在第一个 & 处切分，所以密码里带 & 也不会被切坏。
+     * 返回 null 表示这行是空的、需要忽略。
+     */
+    public static Acc parseLine(String line) {
+        if (line == null) {
+            return null;
+        }
+        String s = line.trim();
+        if (s.length() == 0) {
+            return null;
+        }
+        int p = s.indexOf(SEP);
+        String u;
+        String pw;
+        if (p < 0) {
+            // 只写了账号没写密码，也允许，密码留空
+            u = s;
+            pw = "";
+        } else {
+            u = s.substring(0, p).trim();
+            pw = s.substring(p + 1).trim();
+        }
+        if (u.length() == 0) {
+            return null;
+        }
+        return new Acc(u, pw, true);
+    }
+
+    // ================= 增删改 =================
+
+    /**
+     * 添加一个账号（或一段用换行分隔的多行文本）。
+     * 同名的已存在就覆盖密码，不重复添加。
+     * 返回实际新增/更新的条数。
+     */
+    public static int addOrUpdate(Context ctx, String pkg, String text) {
+        if (text == null || text.trim().length() == 0) {
+            return 0;
+        }
+        List<Acc> cur = list(ctx, pkg);
+        int n = 0;
+        String[] lines = text.split("\n");
+        for (String ln : lines) {
+            Acc a = parseLine(ln);
+            if (a == null) {
+                continue;
+            }
+            int pos = indexOfUser(cur, a.user);
+            if (pos >= 0) {
+                cur.get(pos).pass = a.pass;
+                cur.get(pos).checked = true;
+            } else {
+                cur.add(a);
+            }
+            n++;
+        }
+        save(ctx, pkg, cur);
+        Logger.i("账号已保存: 新增/更新 " + n + " 条，当前共 " + cur.size() + " 条");
+        return n;
+    }
+
+    /** 删除第 idx 条 */
+    public static void remove(Context ctx, String pkg, int idx) {
+        List<Acc> cur = list(ctx, pkg);
+        if (idx < 0 || idx >= cur.size()) {
+            return;
+        }
+        String u = cur.get(idx).user;
+        cur.remove(idx);
+        save(ctx, pkg, cur);
+        Logger.i("已删除账号: " + u);
+    }
+
+    /** 批量删除：把所有勾选的账号一次删掉，返回删除条数 */
+    public static int removeChecked(Context ctx, String pkg) {
+        List<Acc> cur = list(ctx, pkg);
+        int n = 0;
+        for (int i = cur.size() - 1; i >= 0; i--) {
+            if (cur.get(i).checked) {
+                cur.remove(i);
+                n++;
+            }
+        }
+        save(ctx, pkg, cur);
+        Logger.i("批量删除账号 " + n + " 条");
+        return n;
+    }
+
+    /** 清空该游戏所有账号 */
+    public static int removeAll(Context ctx, String pkg) {
+        int n = list(ctx, pkg).size();
+        save(ctx, pkg, new ArrayList<Acc>());
+        Logger.i("已清空该游戏账号 " + n + " 条");
+        return n;
+    }
+
+    /** 切换某条账号的勾选状态 */
+    public static void setChecked(Context ctx, String pkg, int idx, boolean checked) {
+        List<Acc> cur = list(ctx, pkg);
+        if (idx < 0 || idx >= cur.size()) {
+            return;
+        }
+        cur.get(idx).checked = checked;
+        save(ctx, pkg, cur);
+    }
+
+    /** 全选 / 全不选 */
+    public static void setAllChecked(Context ctx, String pkg, boolean checked) {
+        List<Acc> cur = list(ctx, pkg);
+        for (Acc a : cur) {
+            a.checked = checked;
+        }
+        save(ctx, pkg, cur);
+    }
+
+    private static int indexOfUser(List<Acc> l, String u) {
+        for (int i = 0; i < l.size(); i++) {
+            if (l.get(i).user.equals(u)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    // ================= 供脚本引擎调用 =================
+
+    /** 总量 */
+    public static int count(Context ctx, String pkg) {
+        return list(ctx, pkg).size();
+    }
+
+    /** 勾选数量 */
+    public static int checkedCount(Context ctx, String pkg) {
+        int n = 0;
+        for (Acc a : list(ctx, pkg)) {
+            if (a.checked) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    /**
+     * 本次要跑哪些账号：只返回勾选过的，未勾选的直接跳过。
+     * 顺序与列表一致，保证每次跑的顺序稳定。
+     */
+    public static List<Acc> checkedList(Context ctx, String pkg) {
+        List<Acc> out = new ArrayList<Acc>();
+        for (Acc a : list(ctx, pkg)) {
+            if (a.checked) {
+                out.add(a);
+            }
+        }
+        return out;
+    }
+}
