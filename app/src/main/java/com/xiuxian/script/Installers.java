@@ -1,11 +1,15 @@
 package com.xiuxian.script;
 
+import android.app.DownloadManager;
+import android.content.Context;
+import android.content.pm.PackageManager;
+import android.graphics.drawable.Drawable;
+import android.net.Uri;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
-
 import org.json.JSONArray;
 import org.json.JSONObject;
-
 import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -17,14 +21,11 @@ import java.util.List;
 /**
  * 安装包库：从 GitHub Releases 自动列出所有历史版本 APK，点一下就能下载。
  *
- * 为什么这样做，而不是把 APK 塞进 App 里：
- *   单个游戏包就 26MB 以上，几个版本塞进去 App 会变成几百 MB，
- *   每次改脚本都要重新打包上传，换手机下载一次要等很久。
- *   放在 Releases 里当「版本库」，App 只读清单，点哪个下哪个，
- *   既省体积又不会丢版本 —— 这正是「换手机随时下载不同版本」的需求。
- *
- * 注意：仓库若是 public，任何人都能读到这个清单；若是 private，
- * 没登录就读不到，需要改成 public 或手动填链接。
+ * 中文名说明：
+ * GitHub 的附件文件名只接受 ASCII，汉字会被服务端直接剥离，
+ * 所以线上文件名只能是 tiantu-pupu-1.0.4.apk 这种拼音。
+ * 中文显示名与中文下载文件名都放在本类的 MAP 里做映射，
+ * 界面上看到的是中文，存到手机里的文件也是中文名。
  */
 public class Installers {
 
@@ -32,13 +33,77 @@ public class Installers {
     public static final String OWNER = "XXJBGJ";
     public static final String REPO = "xiuxian-script";
 
+    /**
+     * 线上文件名关键字 → { 中文显示名, 版本, 对应游戏包名 }
+     * 新增版本时只要在这里加一行，界面与下载文件名就自动变中文。
+     */
+    private static final String[][] MAP = new String[][]{
+            {"tiantu-pupu", "天途·噗噗", "1.0.4", "com.tt.spgw.qg"},
+            {"xianmingjue-4399", "仙命决·4399", "2.5", "com.gm.xmj.m4399"},
+            {"xianmingjue-baidu", "仙命决·百度", "1.0.1", "com.gm.xmj.g.baidu"},
+            {"xianmingjue-guaimao", "仙命决·怪猫", "1.3.2", "com.knight.kungfu"},
+            {"xianmingjue-jiuyou", "仙命决·九游", "1.7", "com.gm.xmj.aligames"},
+            {"xianmingjue-jule", "仙命决·聚乐", "3.0", "com.xmj.wf.htc"},
+            {"xianmingjue-moniqi", "仙命决·模拟器", "1.0.0", "com.xmj.twgmb1"},
+            {"xianmingjue-xiaomi", "仙命决·小米", "1.2.4", "com.gm.xmj.mi"},
+    };
+
     public static class Item {
-        public String tag = "";      // 版本标签，如 v1.0.4
-        public String title = "";    // 发布标题
-        public String name = "";     // 资产文件名，如 天途-1.0.4.apk
-        public String url = "";      // 下载直链
-        public long size = 0;        // 字节
-        public String published = "";// 发布时间
+        public String tag = "";
+        public String title = "";
+        public String name = "";
+        public String url = "";
+        public long size = 0;
+        public String published = "";
+
+        /** 中文显示名；MAP 里没有的按文件名整理出一个可读名字 */
+        public String label() {
+            String[] m = match();
+            if (m != null) {
+                return m[1];
+            }
+            String s = name == null ? "" : name;
+            int p = s.toLowerCase().lastIndexOf(".apk");
+            if (p > 0) {
+                s = s.substring(0, p);
+            }
+            return s.replace('-', '·').replace('_', '·');
+        }
+
+        /** 版本号 */
+        public String version() {
+            String[] m = match();
+            if (m != null) {
+                return m[2];
+            }
+            return "";
+        }
+
+        /** 对应游戏包名（用于取游戏图标、判断是否已安装） */
+        public String pkg() {
+            String[] m = match();
+            if (m != null) {
+                return m[3];
+            }
+            return "";
+        }
+
+        /** 保存到手机里的中文文件名 */
+        public String fileName() {
+            String l = label().replace('·', '-').replace('/', '-').replace('\\', '-');
+            String v = version();
+            return (v.length() == 0 ? l : (l + "-" + v)) + ".apk";
+        }
+
+        private String[] match() {
+            String n = name == null ? "" : name.toLowerCase();
+            for (String[] r : MAP) {
+                if (n.contains(r[0])) {
+                    return r;
+                }
+            }
+            return null;
+        }
 
         public String sizeText() {
             if (size <= 0) {
@@ -54,6 +119,56 @@ public class Installers {
 
     public interface Callback {
         void onResult(List<Item> items, String error);
+    }
+
+    /** 取对应游戏的桌面图标；游戏没装时返回 null，由界面用彩色圆标兜底 */
+    public static Drawable icon(Context ctx, String pkg) {
+        if (ctx == null || pkg == null || pkg.length() == 0) {
+            return null;
+        }
+        try {
+            PackageManager pm = ctx.getPackageManager();
+            return pm.getApplicationIcon(pkg);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
+     * 用系统下载器下载，文件名用中文（中文名-版本.apk）。
+     * 不用浏览器打开直链，因为那样存下来的就是一串英文字母。
+     */
+    public static void download(Context ctx, Item it) {
+        try {
+            if (it == null || it.url == null || it.url.length() == 0) {
+                Logger.e("下载地址为空");
+                return;
+            }
+            String fn = it.fileName();
+            DownloadManager.Request req = new DownloadManager.Request(Uri.parse(it.url));
+            req.setTitle("修仙脚本工具 · " + it.label());
+            req.setDescription("正在下载 " + fn);
+            req.setMimeType("application/vnd.android.package-archive");
+            req.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+            req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fn);
+            req.setAllowedOverRoaming(true);
+            DownloadManager dm = (DownloadManager) ctx.getSystemService(Context.DOWNLOAD_SERVICE);
+            if (dm == null) {
+                Logger.e("系统下载服务不可用");
+                return;
+            }
+            dm.enqueue(req);
+            Logger.i("已开始下载：" + fn);
+        } catch (Throwable t) {
+            Logger.e("下载失败: " + t);
+            try {
+                android.content.Intent i = new android.content.Intent(android.content.Intent.ACTION_VIEW,
+                        Uri.parse(it.url));
+                i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                ctx.startActivity(i);
+            } catch (Throwable ignored) {
+            }
+        }
     }
 
     /**
@@ -105,9 +220,7 @@ public class Installers {
                             for (int j = 0; j < assets.length(); j++) {
                                 JSONObject a = assets.getJSONObject(j);
                                 String nm = a.optString("name", "");
-                                // QQ / 微信保存下来的安装包常被改名成 xxx.apk.1、xxx.apk.zip，
-                                // 严格按 .apk 结尾判断会把它们全部漏掉，这里放宽为「名字里含 .apk」。
-                                if (!nm.toLowerCase().contains(".apk")) {
+                                if (nm.toLowerCase().indexOf(".apk") < 0) {
                                     continue;
                                 }
                                 Item it = new Item();
