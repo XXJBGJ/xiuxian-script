@@ -894,6 +894,9 @@ public class AutoService extends AccessibilityService {
         }
     }
 
+    /** 静默找图开关：true 时只判断「有没有」，不点击（用于轮询等待界面出现） */
+    private boolean imgQuiet = false;
+
     private boolean isGold(int c) {
         int r = c >> 16 & 0xFF;
         int g = c >> 8 & 0xFF;
@@ -1294,6 +1297,9 @@ public class AutoService extends AccessibilityService {
             long tol = (long) (255 * (1 - threshold));
             Logger.i("模板「" + tplName + "」最佳误差 " + bestScore + "（阈值 " + tol + "）");
             if (bestX >= 0 && bestScore <= tol) {
+                if (imgQuiet) {
+                    return true;    // 静默模式：只回报存在，不点击
+                }
                 Logger.i("识别到图「" + tplName + "」");
                 return clickPx(bestX + tw / 2, bestY + th / 2);
             }
@@ -1551,6 +1557,266 @@ public class AutoService extends AccessibilityService {
         return !loginCardStill();
     }
 
+    // ==================== 公告 / 提示类弹窗自动点「确定」 ====================
+
+    /** 弹窗确认按钮的文字（命中任一即认为是「确定」） */
+    private static final String[] POPUP_OK = {"确定", "确认", "我知道了", "知道了", "确 定", "好的"};
+
+    /** 出现这些字样基本可判定是公告/提示弹窗，点掉不会误伤游戏主界面 */
+    private static final String[] POPUP_MARK = {"公告", "通知", "提示", "维护", "更新", "致玩家"};
+
+    /**
+     * 干掉当前屏幕上的公告类弹窗，返回是否真的点过。
+     *
+     * 判定思路（避免误点主界面里恰好叫「确定」的按钮）：
+     *   1) 屏幕上必须存在公告类标题字样，或一段较长正文（>=30 字）；
+     *   2) 同时存在文字等于「确定/确认」的按钮；
+     *   3) 两条同时成立才动手：先无障碍点击，其次按坐标点，最后按「橙色按钮」颜色兜底。
+     */
+    public boolean dismissPopups() {
+        boolean hasMark = false;
+        try {
+            android.view.accessibility.AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root != null) {
+                java.util.List<android.view.accessibility.AccessibilityNodeInfo> all =
+                        new java.util.ArrayList<android.view.accessibility.AccessibilityNodeInfo>();
+                collectNodes(root, all, 0);
+
+                for (android.view.accessibility.AccessibilityNodeInfo n : all) {
+                    String t = nodeText(n);
+                    if (t == null || t.length() == 0) {
+                        continue;
+                    }
+                    for (String m : POPUP_MARK) {
+                        if (t.contains(m)) {
+                            hasMark = true;
+                            break;
+                        }
+                    }
+                    // 有整段长正文，也按弹窗看待（公告正文通常就是一大段）
+                    if (!hasMark && t.length() >= 30) {
+                        hasMark = true;
+                    }
+                    if (hasMark) {
+                        break;
+                    }
+                }
+
+                if (hasMark) {
+                    for (android.view.accessibility.AccessibilityNodeInfo n : all) {
+                        String t = nodeText(n);
+                        if (t == null) {
+                            continue;
+                        }
+                        t = t.trim();
+                        boolean hit = false;
+                        for (String k : POPUP_OK) {
+                            if (t.equals(k)) {
+                                hit = true;
+                                break;
+                            }
+                        }
+                        if (!hit) {
+                            continue;
+                        }
+                        android.graphics.Rect r = new android.graphics.Rect();
+                        n.getBoundsInScreen(r);
+                        if (r.width() <= 0 || r.height() <= 0) {
+                            continue;
+                        }
+                        android.view.accessibility.AccessibilityNodeInfo cur = n;
+                        while (cur != null && !cur.isClickable()) {
+                            cur = cur.getParent();
+                        }
+                        if (cur != null && cur.performAction(
+                                android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK)) {
+                            Logger.i("点公告弹窗(无障碍): " + t);
+                            return true;
+                        }
+                        Logger.i("点公告弹窗(坐标): " + t + " " + r.centerX() + "," + r.centerY());
+                        return clickPx(r.centerX(), r.centerY());
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            Logger.w("处理公告弹窗异常: " + t.getClass().getSimpleName());
+        }
+
+        // 无障碍层拿不到按钮时，用颜色兜底（公告的「确定」是橙色实心块）
+        if (hasMark) {
+            try {
+                if (popupByColor()) {
+                    return true;
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 颜色兜底：在屏幕中部偏下找一条橙色实心横条，点它的中心。
+     * 全程按真实像素计算，所以不同分辨率/DPI 都能点到。
+     */
+    private boolean popupByColor() {
+        if (!shot()) {
+            return false;
+        }
+        // 公告的「确定」比登录按钮窄，占比阈值放低一些
+        java.util.List<int[]> bands = colorBands(0, 0.26, (int) (sH * 0.018));
+        int[] pick = null;
+        for (int[] b : bands) {
+            int h = b[1] - b[0] + 1;
+            if (h > sH * 0.10) {
+                continue;   // 太高，不是按钮
+            }
+            double cy = (b[0] + b[1]) / 2.0 / sH;
+            if (cy < 0.38 || cy > 0.90) {
+                continue;   // 只认屏幕中部偏下的按钮
+            }
+            if (pick == null || h > (pick[1] - pick[0] + 1)) {
+                pick = b;
+            }
+        }
+        if (pick == null) {
+            return false;
+        }
+        int cy2 = (pick[0] + pick[1]) / 2;
+        Logger.i("按颜色点公告弹窗确定(" + (sW / 2) + "," + cy2 + ")");
+        if (clickPx(sW / 2, cy2)) {
+            return true;
+        }
+        clickPxRoot(sW / 2, cy2);
+        return true;
+    }
+
+    /**
+     * 登录后等「真正进入游戏」。
+     *
+     * 需求：不再固定死等。每 200ms 看一眼——
+     *   · 有公告/提示弹窗就点掉「确定」；
+     *   · 弹窗点完、登录卡也消失 → 立刻返回，进入下一个步骤；
+     *   · 到上限还没进 → 重新走一次「点登录」，而不是干等（识别失败就重试本步）。
+     */
+    private boolean waitEnterGame(JSONObject s) {
+        int maxMs = s.optInt("waitAfter", 6000);
+        int poll = Math.max(150, s.optInt("poll", 200));
+        int maxRetry = Math.max(0, s.optInt("loginRetry", 2));
+        long end = System.currentTimeMillis() + maxMs;
+        long t0 = System.currentTimeMillis();
+        int retried = 0;
+        int popups = 0;
+
+        while (running && System.currentTimeMillis() < end) {
+            if (dismissPopups()) {
+                popups++;
+                sleep(poll);
+                continue;
+            }
+            if (!loginCardStill()) {
+                // 登录卡没了、也没弹窗，再补一次弹窗检查（公告常常晚一两拍才出来）
+                sleep(poll);
+                if (dismissPopups()) {
+                    popups++;
+                    sleep(poll);
+                    continue;
+                }
+                if (!loginCardStill()) {
+                    Logger.i("进入游戏: 用时 " + (System.currentTimeMillis() - t0)
+                            + " ms，点掉弹窗 " + popups + " 个");
+                    return true;
+                }
+            }
+            // 登录卡还在且确实没进展 → 重试点登录（最多 loginRetry 次）
+            long left = end - System.currentTimeMillis();
+            if (retried < maxRetry && left > poll * 3) {
+                retried++;
+                Logger.w("还没进入游戏，重新点一次登录（第 " + retried + " 次）");
+                if (clickLoginByText()) {
+                    sleep(poll);
+                } else {
+                    clickRatio((float) s.optDouble("btnX", 0.5),
+                            (float) s.optDouble("btnY", 0.548));
+                    sleep(poll);
+                }
+            } else {
+                sleep(poll);
+            }
+        }
+        Logger.w("等待进入游戏超时（" + maxMs + " ms），继续按后续步骤执行");
+        return false;
+    }
+
+    /**
+     * 轮询等待某个条件成立，成立就立刻返回 true（用于「识别成功即下一步」）。
+     *
+     * @param texts  文字关键字，任一命中即算成功（可为空）
+     * @param tpl    模板图名（可为空）
+     * @param maxMs  最多等多久
+     * @param poll   每次间隔
+     */
+    public boolean waitUntil(String[] texts, String tpl, int maxMs, int poll) {
+        long end = System.currentTimeMillis() + Math.max(0, maxMs);
+        int gap = Math.max(120, poll);
+        while (running) {
+            if (texts != null && texts.length > 0) {
+                for (String k : texts) {
+                    if (k != null && k.trim().length() > 0 && textExists(k.trim())) {
+                        return true;
+                    }
+                }
+            }
+            if (tpl != null && tpl.trim().length() > 0) {
+                if (findImageQuiet(tpl.trim())) {
+                    return true;
+                }
+            }
+            if (System.currentTimeMillis() >= end) {
+                return false;
+            }
+            sleepQuiet(gap);
+        }
+        return false;
+    }
+
+    /** 屏幕上是否出现某段文字（只看层级，不点） */
+    public boolean textExists(String key) {
+        try {
+            android.view.accessibility.AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root == null) {
+                return false;
+            }
+            java.util.List<android.view.accessibility.AccessibilityNodeInfo> all =
+                    new java.util.ArrayList<android.view.accessibility.AccessibilityNodeInfo>();
+            collectNodes(root, all, 0);
+            for (android.view.accessibility.AccessibilityNodeInfo n : all) {
+                String t = nodeText(n);
+                if (t != null && t.contains(key)) {
+                    return true;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
+    /** 只判断有没有这张模板图，不点击（复用 findImage 的匹配，靠开关屏蔽点击） */
+    private boolean findImageQuiet(String tplName) {
+        imgQuiet = true;
+        try {
+            return findImage(tplName, 0.82);
+        } catch (Throwable t) {
+            return false;
+        } finally {
+            imgQuiet = false;
+        }
+    }
+
+    /** 安静版 sleep：被停止/暂停打断也不打日志 */
+    private void sleepQuiet(int ms) {
+        sleep(ms);
+    }
+
     /**
      * 自动登录：定位 -> 点账号框 -> 填账号 -> 点密码框 -> 填密码 -> 点登录。
      *
@@ -1705,14 +1971,29 @@ public class AutoService extends AccessibilityService {
             loggedIn = waitLoginGone(1500);
         }
         Logger.i("登录结果: " + (loggedIn ? "登录卡已消失，已进入游戏" : "登录卡仍在，可能账号密码有误"));
+        Logger.i("登录动作完成，耗时 " + (System.currentTimeMillis() - tStart) + " ms");
+
+        // 登录后：不再固定死等。轮询识别——公告弹窗点「确定」，识别到就立刻进入下一步，
+        // 一直识别不到才重试点登录（识别失败重试本步，不空等）。
+        waitEnterGame(s);
         Logger.i("登录流程总耗时 " + (System.currentTimeMillis() - tStart) + " ms");
-        sleep(s.optInt("waitAfter", 6000));
-        Logger.i("登录动作完成");
     }
 
     private void execStep(JSONObject cfg, JSONObject s, int index) {
         String action = s.optString("action", "").trim();
         Logger.i("步骤 " + index + ": " + action);
+        // 每步开跑前扫一眼公告/提示弹窗：有就点「确定」，免得后面每步都点不动。
+        // login 与 dismisspopup 步骤自己会处理，跳过以免重复点击。
+        if (cfg.optBoolean("autoPopup", true)
+                && !"login".equals(action) && !"dismisspopup".equals(action)) {
+            try {
+                if (dismissPopups()) {
+                    Logger.i("步骤前发现弹窗，已点掉，继续本步骤");
+                    sleep(s.optInt("popupGap", 350));
+                }
+            } catch (Throwable ignored) {
+            }
+        }
         switch (action) {
             case "launch": {
                 // 优先用步骤 / 配置里写死的包名；没写就用「当前选中的游戏」的包名。
@@ -1739,7 +2020,34 @@ public class AutoService extends AccessibilityService {
                 break;
             }
             case "wait": {
-                sleep(s.optInt("ms", 1000));
+                // ms 是上限；写了 until / untilImg 就变成轮询等待：
+                // 一旦识别到目标界面立刻进入下一步，识别不到就一直在上限内重试，
+                // 这样界面刷新出来马上就走，不用干等固定时长。
+                int cap = s.optInt("ms", 1000);
+                String until = s.optString("until", "").trim();
+                String untilImg = s.optString("untilImg", "").trim();
+                if (until.length() == 0 && untilImg.length() == 0) {
+                    sleep(cap);
+                    break;
+                }
+                long t0 = System.currentTimeMillis();
+                boolean ok = waitUntil(until.split("\\|"), untilImg, cap,
+                        s.optInt("poll", 250));
+                Logger.i("等待" + (ok ? "命中目标界面，提前进入下一步: "
+                        : "超时未识别到目标界面: ") + (System.currentTimeMillis() - t0) + " ms");
+                break;
+            }
+            case "dismisspopup": {
+                // 专门用来关公告/活动弹窗；连续关几次，防止叠了好几层
+                int n = 0;
+                for (int i = 0; i < 3; i++) {
+                    if (!dismissPopups()) {
+                        break;
+                    }
+                    n++;
+                    sleep(s.optInt("poll", 350));
+                }
+                Logger.i("关闭弹窗: " + (n > 0 ? "已点掉 " + n + " 个" : "无弹窗"));
                 break;
             }
             case "click": {
@@ -1807,14 +2115,37 @@ public class AutoService extends AccessibilityService {
             case "findimg":
             case "findimage": {
                 String tpl = s.optString("tpl", s.optString("text", ""));
-                boolean hit = findImage(tpl, s.optDouble("tolerance", 0.82));
-                Logger.i("找图「" + tpl + "」: " + (hit ? "命中并点击" : "未命中"));
+                // 未命中就按 poll 间隔重试，上限 ms（默认 3000），命中即走
+                int cap = s.optInt("ms", 3000);
+                int poll = Math.max(150, s.optInt("poll", 300));
+                long t0 = System.currentTimeMillis();
+                boolean hit = false;
+                while (running) {
+                    hit = findImage(tpl, s.optDouble("tolerance", 0.82));
+                    if (hit || System.currentTimeMillis() - t0 >= cap) {
+                        break;
+                    }
+                    sleep(poll);
+                }
+                Logger.i("找图「" + tpl + "」: " + (hit ? "命中并点击" : "未命中")
+                        + "，耗时 " + (System.currentTimeMillis() - t0) + " ms");
                 break;
             }
             case "findtext": {
                 String key = s.optString("text", s.optString("msg", ""));
-                boolean hit = clickByKeyword(key.split("\\|"));
-                Logger.i("找字「" + key + "」: " + (hit ? "命中并点击" : "未命中"));
+                int cap = s.optInt("ms", 3000);
+                int poll = Math.max(150, s.optInt("poll", 300));
+                long t0 = System.currentTimeMillis();
+                boolean hit = false;
+                while (running) {
+                    hit = clickByKeyword(key.split("\\|"));
+                    if (hit || System.currentTimeMillis() - t0 >= cap) {
+                        break;
+                    }
+                    sleep(poll);
+                }
+                Logger.i("找字「" + key + "」: " + (hit ? "命中并点击" : "未命中")
+                        + "，耗时 " + (System.currentTimeMillis() - t0) + " ms");
                 break;
             }
             case "log": {
