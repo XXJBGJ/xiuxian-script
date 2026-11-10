@@ -211,9 +211,11 @@ public class FloatWindow {
                             | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
                             | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                     PixelFormat.TRANSLUCENT);
-            lp.gravity = Gravity.TOP | Gravity.START;
+            // 默认贴左下角：登录卡在屏幕中部（账号/密码/登录按钮都在中间），
+            // 放左上会压住「账号登录」标签和账号输入框，放左下基本不碰主要控件。
+            lp.gravity = Gravity.BOTTOM | Gravity.START;
             lp.x = dp(ctx, 6);
-            lp.y = dp(ctx, 110);
+            lp.y = dp(ctx, 40);
 
             // 拖动：按住整块移动（小球状态下也能拖）
             box.setOnTouchListener(new View.OnTouchListener() {
