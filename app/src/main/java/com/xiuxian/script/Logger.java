@@ -69,6 +69,53 @@ public class Logger {
         return logDir == null ? "未初始化" : logDir.getAbsolutePath();
     }
 
+    /** 当天的日志文件（按天切分），未初始化返回 null */
+    public static File currentFile() {
+        if (logDir == null) {
+            return null;
+        }
+        return new File(logDir, "run_" + DAY.format(new Date()) + ".log");
+    }
+
+    /**
+     * 取「完整日志文本」，供一键复制 / 导出使用。
+     *
+     * 先读当天落盘的文件：这样即使 App 重启过、内存日志被清掉，之前的记录也还在。
+     * 文件不存在时退回内存里的行。
+     */
+    public static String fullText() {
+        StringBuilder sb = new StringBuilder();
+        File f = currentFile();
+        if (f != null && f.exists() && f.length() > 0) {
+            java.io.BufferedReader r = null;
+            try {
+                r = new java.io.BufferedReader(new java.io.InputStreamReader(
+                        new java.io.FileInputStream(f), "UTF-8"));
+                String line;
+                while ((line = r.readLine()) != null) {
+                    sb.append(line).append((char) 10);
+                }
+            } catch (Throwable ignored) {
+            } finally {
+                if (r != null) {
+                    try {
+                        r.close();
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
+        }
+        if (sb.length() == 0) {
+            String[] mem = snapshot();
+            if (mem != null) {
+                for (String l : mem) {
+                    sb.append(l).append((char) 10);
+                }
+            }
+        }
+        return sb.toString();
+    }
+
     public static void i(String msg) {
         write("I", msg);
     }
