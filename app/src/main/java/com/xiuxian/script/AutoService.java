@@ -1548,6 +1548,21 @@ public class AutoService extends AccessibilityService {
         boolean loggedIn = false;
         String tplLogin = s.optString("tplLogin", "");
 
+        // 关键：填字过程会推挤界面（键盘/光标/滚动），进这一步前算好的按钮坐标
+        // 到这时可能已经偏了。这里重新定位一次，用"新鲜"坐标去点。
+        if (s.optBoolean("autoLocate", true)) {
+            try {
+                int[] fresh = locateLoginUi();
+                if (fresh != null && fresh[5] > 0) {
+                    Logger.i("登录前重新定位: 账号 y=" + fresh[1] + " 密码 y=" + fresh[3]
+                            + " 登录 y=" + fresh[5] + "（原 " + (ui == null ? "-" : String.valueOf(ui[5])) + "）");
+                    ui = fresh;
+                }
+            } catch (Throwable t) {
+                Logger.w("登录前重新定位失败: " + t.getClass().getSimpleName());
+            }
+        }
+
         if (ui != null && ui[5] > 0) {
             Logger.i("按金色块点登录(" + ui[4] + "," + ui[5] + ")");
             clickPx(ui[4], ui[5]);
