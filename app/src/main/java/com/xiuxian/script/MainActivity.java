@@ -14,6 +14,7 @@ import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Spinner;
@@ -269,7 +270,8 @@ public class MainActivity extends Activity {
                 if (error != null) {
                     new android.app.AlertDialog.Builder(MainActivity.this)
                             .setTitle("读取版本库失败")
-                            .setMessage(error + "\n\n版本库地址：\nhttps://github.com/"
+                            .setMessage(error + NL + NL + "版本库地址：" + NL
+                                    + "https://github.com/"
                                     + Installers.OWNER + "/" + Installers.REPO + "/releases")
                             .setPositiveButton("知道了", null)
                             .show();
@@ -278,45 +280,160 @@ public class MainActivity extends Activity {
                 if (items == null || items.isEmpty()) {
                     new android.app.AlertDialog.Builder(MainActivity.this)
                             .setTitle("版本库里还没有安装包")
-                            .setMessage("把 APK 上传到 Releases 的 Assets 里，这里就会自动出现。\n\n"
+                            .setMessage("把 APK 上传到 Releases 的 Assets 里，这里就会自动出现。" + NL + NL
                                     + "https://github.com/" + Installers.OWNER + "/"
                                     + Installers.REPO + "/releases")
                             .setPositiveButton("知道了", null)
                             .show();
                     return;
                 }
-                final String[] rows = new String[items.size()];
+
+                // 卡片式列表：每个安装包独立一块，图标 + 中文名 + 大小 + 独立下载按钮
+                ScrollView sv = new ScrollView(MainActivity.this);
+                LinearLayout box = new LinearLayout(MainActivity.this);
+                box.setOrientation(LinearLayout.VERTICAL);
+                int pad = dp(10);
+                box.setPadding(pad, pad, pad, pad);
+                sv.addView(box, new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT));
+
                 for (int i = 0; i < items.size(); i++) {
-                    Installers.Item it = items.get(i);
-                    String head = it.tag.isEmpty() ? it.name : it.tag;
-                    rows[i] = head + "\n" + it.name + "  " + it.sizeText()
-                            + (it.published.isEmpty() ? "" : ("  " + it.published));
+                    box.addView(buildLibCard(items.get(i)));
                 }
+
                 new android.app.AlertDialog.Builder(MainActivity.this)
                         .setTitle("安装包库（共 " + items.size() + " 个）")
-                        .setItems(rows, new android.content.DialogInterface.OnClickListener() {
-                            @Override
-                            public void onClick(android.content.DialogInterface d, int which) {
-                                openDownload(items.get(which));
-                            }
-                        })
+                        .setView(sv)
                         .setNegativeButton("关闭", null)
                         .show();
             }
         });
     }
 
-    /** 交给浏览器/系统下载器下载 APK，用户装完即可在扫描列表里勾选 */
-    private void openDownload(Installers.Item it) {
-        try {
-            Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(it.url));
-            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(i);
-            toast("已发起下载: " + it.name);
-            Logger.i("下载安装包: " + it.name + " <- " + it.url);
-        } catch (Throwable t) {
-            toast("无法发起下载: " + t);
+    /** 安装包库里的一张卡片：游戏图标 + 中文名/版本 + 大小日期 + 下载按钮 */
+    private View buildLibCard(final Installers.Item it) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.HORIZONTAL);
+        card.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        card.setPadding(dp(10), dp(10), dp(10), dp(10));
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        clp.bottomMargin = dp(8);
+        card.setLayoutParams(clp);
+
+        android.graphics.drawable.GradientDrawable bg =
+                new android.graphics.drawable.GradientDrawable();
+        bg.setColor(0xFFF7F8FA);
+        bg.setCornerRadius(dp(8));
+        bg.setStroke(dp(1), 0xFFE4E7EC);
+        card.setBackgroundDrawable(bg);
+
+        // 游戏图标：已安装就读真实图标，没装则用彩色圆标兜底
+        ImageView iv = new ImageView(this);
+        android.graphics.drawable.Drawable d = Installers.icon(this, it.pkg());
+        if (d != null) {
+            iv.setImageDrawable(d);
+        } else {
+            iv.setImageDrawable(badgeIcon(it.label()));
         }
+        LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(dp(44), dp(44));
+        ilp.rightMargin = dp(10);
+        card.addView(iv, ilp);
+
+        // 中间两行文字
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        TextView t1 = new TextView(this);
+        String v = it.version();
+        t1.setText(v.isEmpty() ? it.label() : (it.label() + "  " + v));
+        t1.setTextSize(16);
+        t1.setTextColor(0xFF1F2328);
+        col.addView(t1);
+
+        TextView t2 = new TextView(this);
+        String sub = it.sizeText();
+        if (!it.published.isEmpty()) {
+            sub = sub.isEmpty() ? it.published : (sub + "  " + it.published);
+        }
+        t2.setText(sub);
+        t2.setTextSize(12);
+        t2.setTextColor(0xFF8A9099);
+        col.addView(t2);
+        card.addView(col, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        // 独立下载按钮
+        Button btn = new Button(this);
+        btn.setText("下载");
+        btn.setAllCaps(false);
+        btn.setTextSize(14);
+        btn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Installers.download(MainActivity.this, it);
+                Toast.makeText(MainActivity.this,
+                        "已开始下载：" + it.fileName(), Toast.LENGTH_SHORT).show();
+            }
+        });
+        card.addView(btn, new LinearLayout.LayoutParams(dp(76),
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        return card;
+    }
+
+    /** 没装游戏时的占位图标：按渠道取色 + 首字 */
+    private android.graphics.drawable.Drawable badgeIcon(String label) {
+        int size = dp(44);
+        android.graphics.Bitmap bmp = android.graphics.Bitmap.createBitmap(size, size,
+                android.graphics.Bitmap.Config.ARGB_8888);
+        android.graphics.Canvas c = new android.graphics.Canvas(bmp);
+        android.graphics.Paint p = new android.graphics.Paint(
+                android.graphics.Paint.ANTI_ALIAS_FLAG);
+
+        int color = 0xFF3A7D44;
+        if (label.contains("4399")) {
+            color = 0xFFE4572E;
+        } else if (label.contains("百度")) {
+            color = 0xFF2F6FED;
+        } else if (label.contains("怪猫")) {
+            color = 0xFF8E44AD;
+        } else if (label.contains("九游")) {
+            color = 0xFF16A085;
+        } else if (label.contains("聚乐")) {
+            color = 0xFFD4A017;
+        } else if (label.contains("模拟器")) {
+            color = 0xFF607D8B;
+        } else if (label.contains("小米")) {
+            color = 0xFFFF6900;
+        }
+        p.setColor(color);
+        c.drawCircle(size / 2f, size / 2f, size / 2f, p);
+
+        String ch = label == null ? "" : label;
+        int dot = ch.indexOf((char) 183);
+        if (dot >= 0 && dot + 1 < ch.length()) {
+            ch = ch.substring(dot + 1);
+        }
+        if (ch.isEmpty()) {
+            ch = "包";
+        }
+        p.setColor(0xFFFFFFFF);
+        p.setTextSize(dp(20));
+        p.setTextAlign(android.graphics.Paint.Align.CENTER);
+        android.graphics.Paint.FontMetrics fm = p.getFontMetrics();
+        c.drawText(ch.substring(0, 1), size / 2f,
+                size / 2f - (fm.ascent + fm.descent) / 2f, p);
+        return new android.graphics.drawable.BitmapDrawable(getResources(), bmp);
+    }
+
+    /** dp 转像素：界面尺寸一律按 dp 写，兼容 360x600/160dpi */
+    private int dp(int v) {
+        return (int) (v * getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    /** 用系统下载器下载，文件名是中文（中文名 → 版本.apk） */
+    private void openDownload(Installers.Item it) {
+        Installers.download(this, it);
     }
 
     /**
