@@ -170,6 +170,18 @@ public class MainActivity extends Activity {
                     return;
                 }
                 Logger.i("本次运行目标: " + Games.name(gi) + " -> " + Games.pkg(gi));
+                // 启动脚本时自动把进度悬浮窗叫出来（有权限才弹，没权限不打断流程）
+                if (canDrawOverlay()) {
+                    try {
+                        FloatWindow fw = FloatWindow.get(MainActivity.this);
+                        fw.show();
+                        fw.expand();
+                    } catch (Throwable t) {
+                        Logger.w("悬浮窗自动显示失败: " + t);
+                    }
+                } else {
+                    Logger.w("未授予悬浮窗权限，本次不显示进度面板");
+                }
                 s.startScript();
                 refreshStatus();
             }
@@ -183,6 +195,10 @@ public class MainActivity extends Activity {
                     s.stopScript();
                 } else {
                     toast("服务未连接");
+                }
+                try {
+                    FloatWindow.get(MainActivity.this).refresh();
+                } catch (Throwable ignored) {
                 }
                 refreshStatus();
             }
