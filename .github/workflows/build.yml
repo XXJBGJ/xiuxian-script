@@ -29,7 +29,6 @@ jobs:
           file app/src/main/res/mipmap-xxxhdpi/ic_launcher.jpg || true
 
       # runner 自带 Android SDK，直接用它自带的 sdkmanager 装需要的组件
-      # 不再使用 android-actions/setup-android，因为它会去找已被移除的 "tools" 包而失败
       - name: 安装 SDK 平台与构建工具
         run: |
           SDK_ROOT="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
@@ -50,12 +49,21 @@ jobs:
       - name: 编译 Debug APK
         run: gradle assembleDebug --no-daemon --stacktrace
 
-      - name: 显示产物路径
-        run: find app/build/outputs -name "*.apk" -type f
+      # 把产物改成中文名，下载下来就是「修仙脚本工具.apk」而不是 app-debug.apk
+      - name: 重命名为中文安装包名
+        run: |
+          mkdir -p dist
+          SRC=$(find app/build/outputs/apk/debug -name "*.apk" -type f | head -1)
+          echo "源文件: $SRC"
+          if [ -z "$SRC" ]; then
+            echo "没有找到 APK"; exit 1
+          fi
+          cp "$SRC" "dist/修仙脚本工具.apk"
+          ls -l dist/
 
       - name: 上传 APK
         uses: actions/upload-artifact@v4
         with:
-          name: xiuxian-script-debug
-          path: app/build/outputs/apk/debug/*.apk
+          name: 修仙脚本工具
+          path: dist/修仙脚本工具.apk
           if-no-files-found: error
