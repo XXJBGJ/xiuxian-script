@@ -1584,10 +1584,21 @@ public class AutoService extends AccessibilityService {
             loggedIn = waitLoginGone(1200);
         }
         if (!loggedIn && running) {
-            Logger.i("按比例坐标点登录");
-            clickRatio((float) s.optDouble("btnX", 0.5),
-                    (float) s.optDouble("btnY", 0.592));
-            loggedIn = waitLoginGone(1200);
+            // 录屏逐帧实测量得：登录条中心约在屏高 0.548，取色带中心偏下到 0.592。
+            // 按钮只有约 60px 高，点偏 60px 就落到边缘点不动，所以两个比例都试。
+            // （账户注册在更下方约 0.637，不会误触）
+            double[] ys = new double[]{s.optDouble("btnY", 0.548),
+                    s.optDouble("btnY2", 0.592)};
+            for (double ry : ys) {
+                if (loggedIn || !running) {
+                    break;
+                }
+                int px = (int) (sW * s.optDouble("btnX", 0.5));
+                int py = (int) (sH * ry);
+                Logger.i("按比例 root 点登录 " + px + "," + py + " (y=" + ry + ")");
+                clickPxRoot(px, py);
+                loggedIn = waitLoginGone(1200);
+            }
         }
         if (!loggedIn && running && s.optBoolean("enterFallback", true)) {
             Logger.i("改用回车提交登录");
