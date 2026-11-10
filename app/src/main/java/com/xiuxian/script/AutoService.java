@@ -36,6 +36,12 @@ public class AutoService extends AccessibilityService {
     private Thread worker;
     private JSONObject currentConfig;
 
+    /** 当前正在跑的账号（账号循环用） */
+    private String curUser = "";
+    private String curPass = "";
+    private int curAccIndex = 0;
+    private int accTotal = 0;
+
     /** 默认流程：拉起天途 -> 等 4 秒 -> 点屏幕正中 -> 等 1 秒 */
     public static JSONObject defaultConfig() {
         JSONObject o = new JSONObject();
@@ -329,6 +335,14 @@ public class AutoService extends AccessibilityService {
         }
     }
 
+    /**
+     * 跑流程。
+     *
+     * 账号循环：先把该游戏勾选的账号取出来，外层遍历账号、内层遍历步骤。
+     * 一个账号把自己的日常 + 仙榜全部步骤走完，才切到下一个账号；
+     * 没勾选的账号根本不会进这个列表，等于直接跳过。
+     * 配置里写 "perAccount": false 可以关掉账号循环，退回单轮模式。
+     */
     private void runFlow(JSONObject cfg) {
         try {
             int loop = Math.max(1, cfg.optInt("loop", 1));
@@ -336,22 +350,153 @@ public class AutoService extends AccessibilityService {
             if (steps == null) {
                 steps = new JSONArray();
             }
-            Logger.i("共 " + steps.length() + " 个步骤，循环 " + loop + " 轮");
-            for (int i = 0; i < loop && running; i++) {
-                Logger.i("--- 第 " + (i + 1) + "/" + loop + " 轮 ---");
-                for (int j = 0; j < steps.length() && running; j++) {
-                    JSONObject s = steps.optJSONObject(j);
-                    if (s == null) {
-                        continue;
-                    }
-                    execStep(cfg, s, j + 1);
-                }
+
+            java.util.List<Accounts.Acc> accs = new java.util.ArrayList<Accounts.Acc>();
+            try {
+                accs = Accounts.checkedList(this, Games.selectedPkg(this));
+            } catch (Throwable t) {
+                Logger.e("读取账号失败: " + t);
             }
+            boolean perAcc = cfg.optBoolean("perAccount", true);
+
+            if (accs.isEmpty() || !perAcc) {
+                if (accs.isEmpty()) {
+                    Logger.w("没有勾选任何账号，本次不切换账号，只按流程跑一轮");
+                }
+                Logger.i("共 " + steps.length() + " 个步骤，循环 " + loop + " 轮");
+                for (int i = 0; i < loop && running; i++) {
+                    Logger.i("--- 第 " + (i + 1) + "/" + loop + " 轮 ---");
+                    for (int j = 0; j < steps.length() && running; j++) {
+                        JSONObject s = steps.optJSONObject(j);
+                        if (s == null) {
+                            continue;
+                        }
+                        execStep(cfg, s, j + 1);
+                    }
+                }
+                return;
+            }
+
+            accTotal = accs.size();
+            Logger.i("本次共 " + accTotal + " 个勾选账号，逐个跑完再切换");
+            for (int k = 0; k < accs.size() && running; k++) {
+                Accounts.Acc a = accs.get(k);
+                curAccIndex = k + 1;
+                curUser = a.user;
+                curPass = a.pass;
+                Logger.i("======== 账号 " + curAccIndex + "/" + accTotal + ": " + a.user + " ========");
+                for (int i = 0; i < loop && running; i++) {
+                    if (loop > 1) {
+                        Logger.i("--- 账号内第 " + (i + 1) + "/" + loop + " 轮 ---");
+                    }
+                    for (int j = 0; j < steps.length() && running; j++) {
+                        JSONObject s = steps.optJSONObject(j);
+                        if (s == null) {
+                            continue;
+                        }
+                        execStep(cfg, s, j + 1);
+                    }
+                }
+                Logger.i("账号 " + a.user + " 的流程已走完，准备切下一个账号");
+                sleep(800);
+            }
+            Logger.i("全部 " + accTotal + " 个勾选账号已处理完毕");
         } catch (Throwable t) {
             Logger.e("脚本异常中止: " + t);
         } finally {
             running = false;
             Logger.i("======== 脚本结束 ========");
+        }
+    }
+
+    /**
+     * 把 {account} / {password} / {index} / {total} 换成当前账号的值。
+     * 步骤里的输入文本、日志文案都可以用这些占位符。
+     */
+    private String resolve(String s) {
+        if (s == null) {
+            return "";
+        }
+        return s.replace("{account}", curUser)
+                .replace("{user}", curUser)
+                .replace("{password}", curPass)
+                .replace("{pass}", curPass)
+                .replace("{index}", String.valueOf(curAccIndex))
+                .replace("{total}", String.valueOf(accTotal));
+    }
+
+    /** 深度遍历找第一个可编辑的输入框 */
+    private android.view.accessibility.AccessibilityNodeInfo findEditable(
+            android.view.accessibility.AccessibilityNodeInfo node, int depth) {
+        if (node == null || depth > 30) {
+            return null;
+        }
+        CharSequence cls = node.getClassName();
+        if (cls != null && cls.toString().contains("EditText")) {
+            return node;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            android.view.accessibility.AccessibilityNodeInfo c = node.getChild(i);
+            if (c == null) {
+                continue;
+            }
+            android.view.accessibility.AccessibilityNodeInfo r = findEditable(c, depth + 1);
+            if (r != null) {
+                return r;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 往当前输入框里填文字。
+     * 先试无障碍的「设置文本」，不行再退回剪贴板 + 粘贴，
+     * 两条路都不依赖焦点位置，适合游戏登录框这种自绘界面之外的情况。
+     */
+    public boolean inputText(String text) {
+        if (text == null) {
+            text = "";
+        }
+        try {
+            android.view.accessibility.AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root == null) {
+                Logger.w("没有活动窗口，无法输入");
+                return false;
+            }
+            android.view.accessibility.AccessibilityNodeInfo node = root.findFocus(
+                    android.view.accessibility.AccessibilityNodeInfo.FOCUS_INPUT);
+            if (node == null) {
+                node = findEditable(root, 0);
+            }
+            if (node == null) {
+                Logger.w("没有找到输入框，请先点一下输入框");
+                return false;
+            }
+            android.os.Bundle b = new android.os.Bundle();
+            b.putCharSequence(
+                    android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                    text);
+            boolean ok = node.performAction(
+                    android.view.accessibility.AccessibilityNodeInfo.ACTION_SET_TEXT, b);
+            if (ok) {
+                Logger.i("已填入文本（长度 " + text.length() + "）");
+                return true;
+            }
+            android.content.ClipboardManager cm = (android.content.ClipboardManager)
+                    getSystemService(Context.CLIPBOARD_SERVICE);
+            if (cm == null) {
+                Logger.w("剪贴板不可用，输入失败");
+                return false;
+            }
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("xiuxian", text));
+            node.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_FOCUS);
+            boolean p = node.performAction(
+                    android.view.accessibility.AccessibilityNodeInfo.ACTION_PASTE);
+            Logger.i("设置文本被拒，改用粘贴：" + (p ? "成功" : "失败"));
+            return p;
+        } catch (Throwable t) {
+            Logger.e("输入异常: " + t);
+            return false;
         }
     }
 
@@ -427,8 +572,26 @@ public class AutoService extends AccessibilityService {
             case "menu":
                 recents();
                 break;
+            case "input":
+            case "settext": {
+                String text = resolve(s.optString("text", ""));
+                if (s.has("clear") && s.optBoolean("clear", false)) {
+                    inputText("");
+                }
+                inputText(text);
+                break;
+            }
+            case "tapinput": {
+                // 先点一下输入框让它拿到焦点，再填字
+                if (s.has("x")) {
+                    clickRatio((float) s.optDouble("x", 0.5), (float) s.optDouble("y", 0.5));
+                    sleep(s.optInt("ms", 600));
+                }
+                inputText(resolve(s.optString("text", "")));
+                break;
+            }
             case "log": {
-                Logger.i(s.optString("msg", ""));
+                Logger.i(resolve(s.optString("msg", "")));
                 break;
             }
             default:
