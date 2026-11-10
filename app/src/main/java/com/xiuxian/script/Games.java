@@ -5,10 +5,8 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
-
 import org.json.JSONArray;
 import org.json.JSONObject;
-
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -22,8 +20,8 @@ import java.util.List;
  * 桌面名字还常常很像。按名字模糊查找一定会启动错，所以启动只认包名。
  *
  * 列表来源有两层：
- *   1) 内置种子 SEED（天途），保证开箱可用；
- *   2) 用户点「扫描并选择游戏」后，从设备已安装应用里勾选，结果持久化保存。
+ * 1) 内置种子 SEED（天途 + 仙命决各渠道），保证开箱可用；
+ * 2) 用户点「扫描并选择游戏」后，从设备已安装应用里勾选，结果持久化保存。
  * 用户不需要提供 APK、也不需要自己去查包名。
  */
 public class Games {
@@ -35,6 +33,13 @@ public class Games {
     /** 内置种子 {显示名, 包名, 版本备注}，首次启动写入列表 */
     private static final String[][] SEED = new String[][]{
             {"天途", "com.tt.spgw.qg", "1.0.4"},
+            {"仙命决·4399", "com.gm.xmj.m4399", "2.5"},
+            {"仙命决·百度", "com.gm.xmj.g.baidu", "1.0.1"},
+            {"仙命决·怪猫", "com.knight.kungfu", "1.3.2"},
+            {"仙命决·九游", "com.gm.xmj.aligames", "1.7"},
+            {"仙命决·聚乐", "com.xmj.wf.htc", "3.0"},
+            {"仙命决·模拟器", "com.xmj.twgmb1", "1.0.0"},
+            {"仙命决·小米", "com.gm.xmj.mi", "1.2.4"},
     };
 
     public static class Game {
