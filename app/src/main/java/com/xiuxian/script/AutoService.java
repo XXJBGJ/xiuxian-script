@@ -42,10 +42,9 @@ public class AutoService extends AccessibilityService {
     private int curAccIndex = 0;
     private int accTotal = 0;
 
-    /** 默认流程：拉起天途 -> 等 4 秒 -> 点屏幕正中 -> 等 1 秒 */
     /**
      * 默认流程：拉起天途 -> 等加载 -> 自动填账号密码并点登录 -> 等进游戏。
-     * 坐标都是屏幕比例，360x600 换到别的分辨率不用改。
+     * 定位优先用「颜色自动识别」，所以在 360x600 / 1080x1920 等任意分辨率都能用。
      */
     public static JSONObject defaultConfig() {
         JSONObject o = new JSONObject();
@@ -59,6 +58,8 @@ public class AutoService extends AccessibilityService {
             steps.put(new JSONObject().put("action", "wait").put("ms", 9000));
             JSONObject login = new JSONObject();
             login.put("action", "login");
+            login.put("autoLocate", true);
+            login.put("byText", true);
             login.put("userX", 0.5);
             login.put("userY", 0.349);
             login.put("passX", 0.5);
@@ -66,8 +67,6 @@ public class AutoService extends AccessibilityService {
             login.put("btnX", 0.5);
             login.put("btnY", 0.554);
             login.put("retry", 2);
-            login.put("byText", true);
-            login.put("autoLocate", true);
             login.put("waitAfter", 6000);
             steps.put(login);
             o.put("steps", steps);
@@ -464,69 +463,29 @@ public class AutoService extends AccessibilityService {
         return null;
     }
 
-    /** 递归找文字完全等于 text 的节点 */
-    private android.view.accessibility.AccessibilityNodeInfo findByText(
-            android.view.accessibility.AccessibilityNodeInfo node, String text, int depth) {
-        if (node == null || depth > 40) {
-            return null;
-        }
-        CharSequence t = node.getText();
-        if (t != null && t.toString().trim().equals(text)) {
-            return node;
-        }
-        for (int i = 0; i < node.getChildCount(); i++) {
-            android.view.accessibility.AccessibilityNodeInfo r =
-                    findByText(node.getChild(i), text, depth + 1);
-            if (r != null) {
-                return r;
-            }
-        }
-        return null;
-    }
+    // ================= root 通道 =================
 
-    /**
-     * 在界面上找文字为 text 的控件并点它的中心。
-     * 找不到返回 false，交给坐标兜底。
-     */
-    public boolean clickText(String text) {
+    /** 用 root 执行一条命令 */
+    private boolean execRoot(String cmd) {
+        Process pr = null;
         try {
-            android.view.accessibility.AccessibilityNodeInfo root = getRootInActiveWindow();
-            if (root == null) {
-                Logger.w("没有活动窗口，无法按文字查找");
-                return false;
-            }
-            android.view.accessibility.AccessibilityNodeInfo n = findByText(root, text, 0);
-            if (n == null) {
-                Logger.i("界面上没找到文字「" + text + "」");
-                return false;
-            }
-            // 自己不可点就往上找可点的父节点
-            android.view.accessibility.AccessibilityNodeInfo cur = n;
-            while (cur != null && !cur.isClickable()) {
-                cur = cur.getParent();
-            }
-            if (cur != null && cur.performAction(
-                    android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK)) {
-                Logger.i("已按文字「" + text + "」点击");
-                return true;
-            }
-            // 退一步：拿它的坐标自己派发点击
-            android.graphics.Rect r = new android.graphics.Rect();
-            n.getBoundsInScreen(r);
-            if (r.width() > 0 && r.height() > 0) {
-                int cx = r.centerX();
-                int cy = r.centerY();
-                Logger.i("按文字「" + text + "」的坐标点击 " + cx + "," + cy);
-                return clickPx(cx, cy);
-            }
-            return false;
+            pr = Runtime.getRuntime().exec(new String[]{"su", "-c", cmd});
+            int code = pr.waitFor();
+            return code == 0;
         } catch (Throwable t) {
-            Logger.w("按文字点击异常: " + t);
+            Logger.w("root 命令失败: " + t.getClass().getSimpleName());
             return false;
+        } finally {
+            if (pr != null) {
+                try {
+                    pr.destroy();
+                } catch (Throwable ignored) {
+                }
+            }
         }
     }
 
-    /** 用 root 执行命令并拿到标准输出 */
+    /** 用 root 执行命令并拿到输出 */
     private String execRootOut(String cmd) {
         Process pr = null;
         try {
@@ -536,7 +495,7 @@ public class AutoService extends AccessibilityService {
             StringBuilder sb = new StringBuilder();
             String line;
             while ((line = br.readLine()) != null) {
-                sb.append(line).append('\n');
+                sb.append(line).append((char) 10);
             }
             br.close();
             pr.waitFor();
@@ -553,9 +512,243 @@ public class AutoService extends AccessibilityService {
         }
     }
 
-    // ================= 识字：读界面层级，按文字找控件 =================
+    // ================= 输入 =================
 
-    /** 界面上的一个控件 */
+    /** 找当前有输入焦点的输入框 */
+    private android.view.accessibility.AccessibilityNodeInfo focusedInput() {
+        try {
+            android.view.accessibility.AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root == null) {
+                return null;
+            }
+            android.view.accessibility.AccessibilityNodeInfo n = root.findFocus(
+                    android.view.accessibility.AccessibilityNodeInfo.FOCUS_INPUT);
+            if (n != null) {
+                return n;
+            }
+            return findEditable(root, 0);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** 清空当前输入框 */
+    public boolean clearInput() {
+        try {
+            android.view.accessibility.AccessibilityNodeInfo n = focusedInput();
+            if (n != null) {
+                android.os.Bundle b = new android.os.Bundle();
+                b.putCharSequence(
+                        android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                        "");
+                if (n.performAction(
+                        android.view.accessibility.AccessibilityNodeInfo.ACTION_SET_TEXT, b)) {
+                    return true;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        execRoot("input keyevent KEYCODE_MOVE_END");
+        for (int i = 0; i < 24; i++) {
+            execRoot("input keyevent KEYCODE_DEL");
+        }
+        return true;
+    }
+
+    /**
+     * 填文字，三条通道依次尝试：
+     * 1) 无障碍设置文本；2) 剪贴板粘贴；3) root 的 input text。
+     */
+    public boolean inputText(String text) {
+        if (text == null) {
+            text = "";
+        }
+        try {
+            android.view.accessibility.AccessibilityNodeInfo node = focusedInput();
+            if (node != null) {
+                android.os.Bundle b = new android.os.Bundle();
+                b.putCharSequence(
+                        android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                        text);
+                if (node.performAction(
+                        android.view.accessibility.AccessibilityNodeInfo.ACTION_SET_TEXT, b)) {
+                    Logger.i("已填入（无障碍通道，长度 " + text.length() + "）");
+                    return true;
+                }
+                android.content.ClipboardManager cm = (android.content.ClipboardManager)
+                        getSystemService(Context.CLIPBOARD_SERVICE);
+                if (cm != null) {
+                    cm.setPrimaryClip(android.content.ClipData.newPlainText("xiuxian", text));
+                    node.performAction(
+                            android.view.accessibility.AccessibilityNodeInfo.ACTION_FOCUS);
+                    if (node.performAction(
+                            android.view.accessibility.AccessibilityNodeInfo.ACTION_PASTE)) {
+                        Logger.i("已填入（剪贴板通道，长度 " + text.length() + "）");
+                        return true;
+                    }
+                }
+            } else {
+                Logger.w("没有输入框节点，改走 root 通道");
+            }
+        } catch (Throwable t) {
+            Logger.w("无障碍输入异常: " + t.getClass().getSimpleName());
+        }
+        if (text.length() == 0) {
+            return false;
+        }
+        String esc = text.replace(" ", "%s").replace("'", "");
+        boolean ok = execRoot("input text '" + esc + "'");
+        Logger.i("root 通道填字: " + (ok ? "成功" : "失败") + "（长度 " + text.length() + "）");
+        return ok;
+    }
+
+    public boolean inputText(String text, boolean clear) {
+        if (clear) {
+            clearInput();
+            sleep(200);
+        }
+        return inputText(text);
+    }
+
+    // ================= 截屏 =================
+
+    private int[] sPix;
+    private int sW;
+    private int sH;
+
+    /** 截一张屏并缓存像素 */
+    private boolean shot() {
+        try {
+            String tmp = "/data/local/tmp/xiuxian_shot.png";
+            String own = getFilesDir().getAbsolutePath() + "/_shot.png";
+            execRootOut("screencap -p " + tmp + " && cat " + tmp + " > " + own
+                    + " && chmod 666 " + own);
+            android.graphics.Bitmap bmp =
+                    android.graphics.BitmapFactory.decodeFile(own);
+            if (bmp == null) {
+                Logger.w("截屏失败（需要 root 权限）");
+                return false;
+            }
+            sW = bmp.getWidth();
+            sH = bmp.getHeight();
+            sPix = new int[sW * sH];
+            bmp.getPixels(sPix, 0, sW, 0, 0, sW, sH);
+            bmp.recycle();
+            return true;
+        } catch (Throwable t) {
+            Logger.w("截屏异常: " + t.getClass().getSimpleName());
+            return false;
+        }
+    }
+
+    private boolean isGold(int c) {
+        int r = c >> 16 & 0xFF;
+        int g = c >> 8 & 0xFF;
+        int b = c & 0xFF;
+        return r >= 175 && r <= 252 && g >= 125 && g <= 205
+                && b >= 25 && b <= 150 && (r - b) >= 70 && r >= g && g >= b;
+    }
+
+    private boolean isLight(int c) {
+        int r = c >> 16 & 0xFF;
+        int g = c >> 8 & 0xFF;
+        int b = c & 0xFF;
+        return r >= 235 && g >= 232 && b >= 222;
+    }
+
+    /** 某一行指定颜色的占比 */
+    private double rowRatio(int y, int mode) {
+        int from = (int) (sW * 0.12);
+        int to = (int) (sW * 0.88);
+        int hit = 0;
+        int tot = 0;
+        for (int x = from; x < to; x += 2) {
+            int c = sPix[y * sW + x];
+            boolean ok = mode == 0 ? isGold(c) : isLight(c);
+            if (ok) {
+                hit++;
+            }
+            tot++;
+        }
+        return tot == 0 ? 0 : (double) hit / tot;
+    }
+
+    /** 提取某种颜色的横条区间 */
+    private java.util.List<int[]> colorBands(int mode, double minRatio, int minH) {
+        java.util.List<int[]> out = new java.util.ArrayList<int[]>();
+        int start = -1;
+        for (int y = 0; y < sH; y++) {
+            boolean on = rowRatio(y, mode) >= minRatio;
+            if (on && start < 0) {
+                start = y;
+            } else if (!on && start >= 0) {
+                if (y - start >= minH) {
+                    out.add(new int[]{start, y - 1});
+                }
+                start = -1;
+            }
+        }
+        if (start >= 0 && sH - start >= minH) {
+            out.add(new int[]{start, sH - 1});
+        }
+        return out;
+    }
+
+    /**
+     * 自动定位「账号框 / 密码框 / 登录按钮」。
+     *
+     * 登录按钮是界面上最大的一块金色实心条，先按颜色找出来；
+     * 输入框是按钮上方的浅色横条，取离按钮最近的两条。
+     * 全部用真实像素计算，所以分辨率、DPI 不同也能定位。
+     */
+    public int[] locateLoginUi() {
+        if (!shot()) {
+            return null;
+        }
+        java.util.List<int[]> golds = colorBands(0, 0.55, (int) (sH * 0.025));
+        int[] btn = null;
+        int bestH = 0;
+        for (int[] b : golds) {
+            int h = b[1] - b[0] + 1;
+            if (h > sH * 0.15) {
+                continue;
+            }
+            if (b[0] > sH * 0.33 && h >= bestH) {
+                bestH = h;
+                btn = b;
+            }
+        }
+        if (btn == null) {
+            Logger.w("没找到登录按钮（金色块）");
+            return null;
+        }
+        java.util.List<int[]> lights = colorBands(1, 0.55, (int) (sH * 0.025));
+        java.util.List<int[]> fields = new java.util.ArrayList<int[]>();
+        for (int[] b : lights) {
+            int h = b[1] - b[0] + 1;
+            if (b[1] < btn[0] && h <= sH * 0.12) {
+                fields.add(b);
+            }
+        }
+        if (fields.size() < 2) {
+            Logger.w("按钮上方只识别到 " + fields.size() + " 个输入框");
+            return null;
+        }
+        int[] passB = fields.get(fields.size() - 1);
+        int[] userB = fields.get(fields.size() - 2);
+        int cx = sW / 2;
+        int[] r = new int[]{
+                cx, (userB[0] + userB[1]) / 2,
+                cx, (passB[0] + passB[1]) / 2,
+                cx, (btn[0] + btn[1]) / 2
+        };
+        Logger.i("自动定位(" + sW + "x" + sH + ")：账号 y=" + r[1]
+                + "  密码 y=" + r[3] + "  登录 y=" + r[5]);
+        return r;
+    }
+
+    // ================= 识字：读界面层级 =================
+
     public static class UiNode {
         public String text = "";
         public String desc = "";
@@ -570,7 +763,6 @@ public class AutoService extends AccessibilityService {
             return (top + bottom) / 2;
         }
 
-        /** 把 text / content-desc / class 拼起来，方便一次关键字判断 */
         public String all() {
             return text + "|" + desc + "|" + cls;
         }
@@ -587,18 +779,13 @@ public class AutoService extends AccessibilityService {
     private static final java.util.regex.Pattern ATTR_BND =
             java.util.regex.Pattern.compile("bounds=\"\\[(\\d+),(\\d+)\\]\\[(\\d+),(\\d+)\\]\"");
 
-    /**
-     * 读取当前界面的控件树。
-     *
-     * 走 uiautomator dump：它返回的是「文字 + 屏幕坐标」，
-     * 与分辨率、DPI 完全无关，换手机也能认出同一个按钮。
-     */
+    /** 读界面控件树（文字 + 真实屏幕坐标，与分辨率无关） */
     public java.util.List<UiNode> dumpUi() {
         java.util.List<UiNode> out = new java.util.ArrayList<UiNode>();
         String xml = execRootOut("uiautomator dump /data/local/tmp/xiuxian_ui.xml >/dev/null 2>&1; "
                 + "cat /data/local/tmp/xiuxian_ui.xml");
         if (xml == null || xml.length() < 30) {
-            Logger.w("界面层级读取失败（uiautomator 不可用或没开 root）");
+            Logger.w("界面层级读取失败（uiautomator 不可用或没 root）");
             return out;
         }
         java.util.regex.Matcher m = NODE_PAT.matcher(xml);
@@ -632,7 +819,6 @@ public class AutoService extends AccessibilityService {
         return out;
     }
 
-    /** 在控件树里找第一个含关键字的控件；keys 任一命中即可 */
     private UiNode findNode(java.util.List<UiNode> nodes, String[] keys, boolean wantEditable) {
         for (UiNode n : nodes) {
             if (wantEditable && n.cls.indexOf("EditText") < 0) {
@@ -648,14 +834,8 @@ public class AutoService extends AccessibilityService {
         return null;
     }
 
-    /**
-     * 按文字找控件并点击，三级回退：
-     * 1) 无障碍树里的文字；
-     * 2) uiautomator 读到的界面文字（最稳，与分辨率无关）；
-     * 3) 都找不到才用调用方给的固定坐标。
-     */
+    /** 按文字找控件并点击：无障碍 -> 界面层级 -> false */
     public boolean clickByKeyword(String[] keys) {
-        // 第 1 级：无障碍树
         try {
             android.view.accessibility.AccessibilityNodeInfo root = getRootInActiveWindow();
             if (root != null) {
@@ -675,7 +855,8 @@ public class AutoService extends AccessibilityService {
                         android.graphics.Rect r = new android.graphics.Rect();
                         n.getBoundsInScreen(r);
                         if (r.width() > 0) {
-                            Logger.i("识别到「" + k + "」，按它自己的坐标点击 " + r.centerX() + "," + r.centerY());
+                            Logger.i("识别到「" + k + "」，按坐标点击 "
+                                    + r.centerX() + "," + r.centerY());
                             return clickPx(r.centerX(), r.centerY());
                         }
                     }
@@ -684,7 +865,6 @@ public class AutoService extends AccessibilityService {
         } catch (Throwable t) {
             Logger.w("无障碍找字异常: " + t.getClass().getSimpleName());
         }
-        // 第 2 级：uiautomator 层级
         java.util.List<UiNode> nodes = dumpUi();
         UiNode n = findNode(nodes, keys, false);
         if (n != null) {
@@ -695,7 +875,7 @@ public class AutoService extends AccessibilityService {
         return false;
     }
 
-    /** 按关键字找输入框并点它，返回是否找到 */
+    /** 按关键字找输入框并点它 */
     public boolean clickField(String[] keys) {
         java.util.List<UiNode> nodes = dumpUi();
         UiNode n = findNode(nodes, keys, true);
@@ -710,7 +890,6 @@ public class AutoService extends AccessibilityService {
         return clickPx(n.cx(), n.cy());
     }
 
-    /** 文字包含关键字的节点（供按字点击用） */
     private android.view.accessibility.AccessibilityNodeInfo findByTextLike(
             android.view.accessibility.AccessibilityNodeInfo node, String key, int depth) {
         if (node == null || depth > 40 || key == null || key.length() == 0) {
@@ -734,204 +913,11 @@ public class AutoService extends AccessibilityService {
         return null;
     }
 
-    // ================= 自动定位：按颜色找按钮，再反推输入框 =================
+    // ================= 识图：灰度模板匹配 =================
 
     /**
-     * 屏幕截图的像素缓存。取一次，后面所有识别都基于它，
-     * 避免反复 screencap 拖慢脚本。
-     */
-    private int[] sPix;
-    private int sW;
-    private int sH;
-
-    /** 截一张屏并缓存像素；成功返回 true */
-    private boolean shot() {
-        try {
-            String tmp = "/data/local/tmp/xiuxian_shot.png";
-            String own = getFilesDir().getAbsolutePath() + "/_shot.png";
-            execRootOut("screencap -p " + tmp + " && cat " + tmp + " > " + own
-                    + " && chmod 666 " + own);
-            android.graphics.Bitmap bmp =
-                    android.graphics.BitmapFactory.decodeFile(own);
-            if (bmp == null) {
-                Logger.w("截屏失败（需要 root 权限）");
-                return false;
-            }
-            sW = bmp.getWidth();
-            sH = bmp.getHeight();
-            sPix = new int[sW * sH];
-            bmp.getPixels(sPix, 0, sW, 0, 0, sW, sH);
-            bmp.recycle();
-            return true;
-        } catch (Throwable t) {
-            Logger.w("截屏异常: " + t.getClass().getSimpleName());
-            return false;
-        }
-    }
-
-    /** 金色系（登录按钮那种底色） */
-    private boolean isGold(int c) {
-        int r = c >> 16 & 0xFF;
-        int g = c >> 8 & 0xFF;
-        int b = c & 0xFF;
-        return r >= 175 && r <= 252 && g >= 125 && g <= 205
-                && b >= 25 && b <= 150 && (r - b) >= 70 && r >= g && g >= b;
-    }
-
-    /** 浅色/白色（输入框内部底色） */
-    private boolean isLight(int c) {
-        int r = c >> 16 & 0xFF;
-        int g = c >> 8 & 0xFF;
-        int b = c & 0xFF;
-        return r >= 235 && g >= 232 && b >= 222;
-    }
-
-    /** 某一行的指定颜色占比 */
-    private double rowRatio(int y, int mode) {
-        int from = (int) (sW * 0.12);
-        int to = (int) (sW * 0.88);
-        int hit = 0;
-        int tot = 0;
-        for (int x = from; x < to; x += 2) {
-            int c = sPix[y * sW + x];
-            boolean ok = mode == 0 ? isGold(c) : isLight(c);
-            if (ok) {
-                hit++;
-            }
-            tot++;
-        }
-        return tot == 0 ? 0 : (double) hit / tot;
-    }
-
-    /** 极端颜色段：返回 [top, bottom] 的列表，按屏幕从上到下 */
-    private java.util.List<int[]> colorBands(int mode, double minRatio, int minH) {
-        java.util.List<int[]> out = new java.util.ArrayList<int[]>();
-        int start = -1;
-        for (int y = 0; y < sH; y++) {
-            boolean on = rowRatio(y, mode) >= minRatio;
-            if (on && start < 0) {
-                start = y;
-            } else if (!on && start >= 0) {
-                if (y - start >= minH) {
-                    out.add(new int[]{start, y - 1});
-                }
-                start = -1;
-            }
-        }
-        if (start >= 0 && sH - start >= minH) {
-            out.add(new int[]{start, sH - 1});
-        }
-        return out;
-    }
-
-    /**
-     * 在当前屏幕上自动定位「账号框 / 密码框 / 登录按钮」。
-     *
-     * 思路：
-     *  - 登录按钮是界面上最大的一块金色实心块，先按颜色把它找出来；
-     *  - 输入框是浅色横条，位置就在按钮上方，取离按钮最近的两条；
-     *  - 全程用真实像素算，返回真实坐标，所以分辨率、DPI 变了都不影响。
-     *
-     * 返回 {账号x, 账号y, 密码x, 密码y, 按钮x, 按钮y}，失败返回 null。
-     */
-    public int[] locateLoginUi() {
-        if (!shot()) {
-            return null;
-        }
-        // 1) 金色块：按钮高度一般占屏幕 3%~14%
-        java.util.List<int[]> golds = colorBands(0, 0.55, (int) (sH * 0.025));
-        int[] btn = null;
-        int bestH = 0;
-        for (int[] b : golds) {
-            int h = b[1] - b[0] + 1;
-            if (h > sH * 0.15) {
-                continue;
-            }
-            // 取最靠下、且高度足够的那块（一般就是登录按钮）
-            if (b[0] > sH * 0.33 && h >= bestH) {
-                bestH = h;
-                btn = b;
-            }
-        }
-        if (btn == null) {
-            Logger.w("没找到登录按钮（金色块）");
-            return null;
-        }
-        int btnCy = (btn[0] + btn[1]) / 2;
-
-        // 2) 按钮上方的浅色横条 = 输入框
-        java.util.List<int[]> lights = colorBands(1, 0.55, (int) (sH * 0.025));
-        java.util.List<int[]> fields = new java.util.ArrayList<int[]>();
-        for (int[] b : lights) {
-            int h = b[1] - b[0] + 1;
-            if (b[1] < btn[0] && h <= sH * 0.12) {
-                fields.add(b);
-            }
-        }
-        if (fields.size() < 2) {
-            Logger.w("按钮上方只识别到 " + fields.size() + " 个输入框");
-            return null;
-        }
-        // 取离按钮最近的两个，靠上的当账号框，靠下的当密码框
-        int[] passB = fields.get(fields.size() - 1);
-        int[] userB = fields.get(fields.size() - 2);
-
-        int cx = sW / 2;
-        int[] r = new int[]{
-                cx, (userB[0] + userB[1]) / 2,
-                cx, (passB[0] + passB[1]) / 2,
-                cx, btnCy
-        };
-        Logger.i("自动定位(" + sW + "x" + sH + ")：账号 y=" + r[1]
-                + "  密码 y=" + r[3] + "  登录 y=" + r[5]);
-        return r;
-    }
-
-    // ================= 识图：root 截屏 + 灰度模板匹配 =================
-
-    /** 截屏并转成灰度数组，返回 {灰度数组, 宽} ；失败返回 null */
-    private Object[] grabGray() {
-        try {
-            String tmp = "/data/local/tmp/xiuxian_shot.png";
-            String own = getFilesDir().getAbsolutePath() + "/_shot.png";
-            String cmd = "screencap -p " + tmp + " && cat " + tmp + " > " + own
-                    + " && chmod 666 " + own;
-            execRootOut(cmd);
-            java.io.File f = new java.io.File(own);
-            if (!f.exists() || f.length() < 100) {
-                Logger.w("截屏失败（需要 root）");
-                return null;
-            }
-            android.graphics.Bitmap bmp =
-                    android.graphics.BitmapFactory.decodeFile(own);
-            if (bmp == null) {
-                Logger.w("截屏解码失败");
-                return null;
-            }
-            int w = bmp.getWidth();
-            int h = bmp.getHeight();
-            int[] px = new int[w * h];
-            bmp.getPixels(px, 0, w, 0, 0, w, h);
-            int[] gray = new int[w * h];
-            for (int i = 0; i < px.length; i++) {
-                int c = px[i];
-                gray[i] = ((c >> 16 & 0xFF) * 77 + (c >> 8 & 0xFF) * 151 + (c & 0xFF) * 28) >> 8;
-            }
-            bmp.recycle();
-            Logger.i("截屏成功 " + w + "x" + h);
-            return new Object[]{gray, w, h};
-        } catch (Throwable t) {
-            Logger.e("截屏异常: " + t);
-            return null;
-        }
-    }
-
-    /**
-     * 在当前屏幕上找模板图，找到就点它的中心。
-     *
-     * 模板图放在 App 私有目录 tpl/ 下（比如 tpl/login.png）。
-     * 匹配用灰度归一化差值的做法，容差可调；
-     * 因为是在当前屏幕里实地比对，所以分辨率变了也能找到。
+     * 在当前屏幕里找模板图，命中就点中心。
+     * 模板放在 App 私有目录 tpl/ 下（如 tpl/login.png）。
      */
     public boolean findImage(String tplName, double threshold) {
         if (tplName == null || tplName.length() == 0) {
@@ -959,32 +945,30 @@ public class AutoService extends AccessibilityService {
                 tg[i] = ((c >> 16 & 0xFF) * 77 + (c >> 8 & 0xFF) * 151 + (c & 0xFF) * 28) >> 8;
             }
             tb.recycle();
-
-            Object[] g = grabGray();
-            if (g == null) {
+            if (!shot()) {
                 return false;
             }
-            int[] screen = (int[]) g[0];
-            int sw = (Integer) g[1];
-            int sh = (Integer) g[2];
-            if (tw > sw || th > sh) {
-                Logger.w("模板比屏幕还大，跳过");
+            if (tw > sW || th > sH) {
+                Logger.w("模板比屏幕大，跳过");
                 return false;
             }
-
+            int[] sg = new int[sW * sH];
+            for (int i = 0; i < sPix.length; i++) {
+                int c = sPix[i];
+                sg[i] = ((c >> 16 & 0xFF) * 77 + (c >> 8 & 0xFF) * 151 + (c & 0xFF) * 28) >> 8;
+            }
             int bestX = -1;
             int bestY = -1;
             long bestScore = Long.MAX_VALUE;
-            int step = 3;
-            for (int y = 0; y + th <= sh; y += step) {
-                for (int x = 0; x + tw <= sw; x += step) {
+            for (int y = 0; y + th <= sH; y += 3) {
+                for (int x = 0; x + tw <= sW; x += 3) {
                     long diff = 0;
                     int cnt = 0;
                     for (int ty = 0; ty < th; ty += 4) {
-                        int rowS = (y + ty) * sw + x;
+                        int rowS = (y + ty) * sW + x;
                         int rowT = ty * tw;
                         for (int tx = 0; tx < tw; tx += 4) {
-                            diff += Math.abs(screen[rowS + tx] - tg[rowT + tx]);
+                            diff += Math.abs(sg[rowS + tx] - tg[rowT + tx]);
                             cnt++;
                         }
                     }
@@ -996,229 +980,15 @@ public class AutoService extends AccessibilityService {
                     }
                 }
             }
-            int tol = (int) (255 * (1 - threshold));
+            long tol = (long) (255 * (1 - threshold));
             Logger.i("模板「" + tplName + "」最佳误差 " + bestScore + "（阈值 " + tol + "）");
             if (bestX >= 0 && bestScore <= tol) {
-                int cx = bestX + tw / 2;
-                int cy = bestY + th / 2;
-                Logger.i("识别到图「" + tplName + "」，坐标点击 " + cx + "," + cy);
-                return clickPx(cx, cy);
+                Logger.i("识别到图「" + tplName + "」");
+                return clickPx(bestX + tw / 2, bestY + th / 2);
             }
             return false;
         } catch (Throwable t) {
             Logger.e("找图异常: " + t);
-            return false;
-        }
-    }
-
-    /** 用 root 执行一条命令（模拟器已开 root 时可用） */
-    private boolean execRoot(String cmd) {
-        Process pr = null;
-        try {
-            pr = Runtime.getRuntime().exec(new String[]{"su", "-c", cmd});
-            int code = pr.waitFor();
-            return code == 0;
-        } catch (Throwable t) {
-            Logger.w("root 命令失败(" + cmd + "): " + t.getClass().getSimpleName());
-            return false;
-        } finally {
-            if (pr != null) {
-                try {
-                    pr.destroy();
-                } catch (Throwable ignored) {
-                }
-            }
-        }
-    }
-
-    /** 找到当前拥有输入焦点的输入框节点 */
-    private android.view.accessibility.AccessibilityNodeInfo focusedInput() {
-        try {
-            android.view.accessibility.AccessibilityNodeInfo root = getRootInActiveWindow();
-            if (root == null) {
-                return null;
-            }
-            android.view.accessibility.AccessibilityNodeInfo n = root.findFocus(
-                    android.view.accessibility.AccessibilityNodeInfo.FOCUS_INPUT);
-            if (n != null) {
-                return n;
-            }
-            return findEditable(root, 0);
-        } catch (Throwable t) {
-            return null;
-        }
-    }
-
-    /** 清空当前输入框：先试无障碍直接置空，不行再用 root 连按退格 */
-    public boolean clearInput() {
-        try {
-            android.view.accessibility.AccessibilityNodeInfo n = focusedInput();
-            if (n != null) {
-                android.os.Bundle b = new android.os.Bundle();
-                b.putCharSequence(
-                        android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
-                        "");
-                if (n.performAction(
-                        android.view.accessibility.AccessibilityNodeInfo.ACTION_SET_TEXT, b)) {
-                    return true;
-                }
-            }
-        } catch (Throwable ignored) {
-        }
-        execRoot("input keyevent KEYCODE_MOVE_END");
-        for (int i = 0; i < 24; i++) {
-            execRoot("input keyevent KEYCODE_DEL");
-        }
-        return true;
-    }
-
-    /**
-     * 往当前输入框里填文字，三条通道依次尝试：
-     * 1) 无障碍 ACTION_SET_TEXT —— 最干净，原生输入框直接生效；
-     * 2) 剪贴板 + 粘贴 —— 应对只认粘贴的输入框；
-     * 3) root 的 input text —— 游戏自绘输入框、前两条都失效时兜底。
-     */
-    public boolean inputText(String text) {
-        if (text == null) {
-            text = "";
-        }
-        try {
-            android.view.accessibility.AccessibilityNodeInfo node = focusedInput();
-            if (node != null) {
-                android.os.Bundle b = new android.os.Bundle();
-                b.putCharSequence(
-                        android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
-                        text);
-                boolean ok = node.performAction(
-                        android.view.accessibility.AccessibilityNodeInfo.ACTION_SET_TEXT, b);
-                if (ok) {
-                    Logger.i("已填入文本（无障碍通道，长度 " + text.length() + "）");
-                    return true;
-                }
-                android.content.ClipboardManager cm = (android.content.ClipboardManager)
-                        getSystemService(Context.CLIPBOARD_SERVICE);
-                if (cm != null) {
-                    cm.setPrimaryClip(android.content.ClipData.newPlainText("xiuxian", text));
-                    node.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_FOCUS);
-                    boolean ps = node.performAction(
-                            android.view.accessibility.AccessibilityNodeInfo.ACTION_PASTE);
-                    if (ps) {
-                        Logger.i("已填入文本（剪贴板通道，长度 " + text.length() + "）");
-                        return true;
-                    }
-                }
-            } else {
-                Logger.w("没有拿到输入框节点，改走 root 通道");
-            }
-        } catch (Throwable t) {
-            Logger.w("无障碍输入异常: " + t.getClass().getSimpleName());
-        }
-
-        // root 兜底：input text 里空格要写成 %s
-        if (text.length() == 0) {
-            return false;
-        }
-        String esc = text.replace("\\", "\\\\").replace("'", "'\\''").replace(" ", "%s");
-        boolean ok2 = execRoot("input text '" + esc + "'");
-        Logger.i("root 通道填字: " + (ok2 ? "成功" : "失败") + "（长度 " + text.length() + "）");
-        return ok2;
-    }
-
-    public boolean inputText(String text, boolean clear) {
-        if (clear) {
-            clearInput();
-            sleep(200);
-        }
-        return inputText(text);
-    }
-
-    /**
-     * 把 {account} / {password} / {index} / {total} 换成当前账号的值。
-     * 步骤里的输入文本、日志文案都可以用这些占位符。
-     */
-    private String resolve(String s) {
-        if (s == null) {
-            return "";
-        }
-        return s.replace("{account}", curUser)
-                .replace("{user}", curUser)
-                .replace("{password}", curPass)
-                .replace("{pass}", curPass)
-                .replace("{index}", String.valueOf(curAccIndex))
-                .replace("{total}", String.valueOf(accTotal));
-    }
-
-    /** 深度遍历找第一个可编辑的输入框 */
-    private android.view.accessibility.AccessibilityNodeInfo findEditable(
-            android.view.accessibility.AccessibilityNodeInfo node, int depth) {
-        if (node == null || depth > 30) {
-            return null;
-        }
-        CharSequence cls = node.getClassName();
-        if (cls != null && cls.toString().contains("EditText")) {
-            return node;
-        }
-        for (int i = 0; i < node.getChildCount(); i++) {
-            android.view.accessibility.AccessibilityNodeInfo c = node.getChild(i);
-            if (c == null) {
-                continue;
-            }
-            android.view.accessibility.AccessibilityNodeInfo r = findEditable(c, depth + 1);
-            if (r != null) {
-                return r;
-            }
-        }
-        return null;
-    }
-
-    /**
-     * 往当前输入框里填文字。
-     * 先试无障碍的「设置文本」，不行再退回剪贴板 + 粘贴，
-     * 两条路都不依赖焦点位置，适合游戏登录框这种自绘界面之外的情况。
-     */
-    public boolean inputText(String text) {
-        if (text == null) {
-            text = "";
-        }
-        try {
-            android.view.accessibility.AccessibilityNodeInfo root = getRootInActiveWindow();
-            if (root == null) {
-                Logger.w("没有活动窗口，无法输入");
-                return false;
-            }
-            android.view.accessibility.AccessibilityNodeInfo node = root.findFocus(
-                    android.view.accessibility.AccessibilityNodeInfo.FOCUS_INPUT);
-            if (node == null) {
-                node = findEditable(root, 0);
-            }
-            if (node == null) {
-                Logger.w("没有找到输入框，请先点一下输入框");
-                return false;
-            }
-            android.os.Bundle b = new android.os.Bundle();
-            b.putCharSequence(
-                    android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
-                    text);
-            boolean ok = node.performAction(
-                    android.view.accessibility.AccessibilityNodeInfo.ACTION_SET_TEXT, b);
-            if (ok) {
-                Logger.i("已填入文本（长度 " + text.length() + "）");
-                return true;
-            }
-            android.content.ClipboardManager cm = (android.content.ClipboardManager)
-                    getSystemService(Context.CLIPBOARD_SERVICE);
-            if (cm == null) {
-                Logger.w("剪贴板不可用，输入失败");
-                return false;
-            }
-            cm.setPrimaryClip(android.content.ClipData.newPlainText("xiuxian", text));
-            node.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_FOCUS);
-            boolean p = node.performAction(
-                    android.view.accessibility.AccessibilityNodeInfo.ACTION_PASTE);
-            Logger.i("设置文本被拒，改用粘贴：" + (p ? "成功" : "失败"));
-            return p;
-        } catch (Throwable t) {
-            Logger.e("输入异常: " + t);
             return false;
         }
     }
@@ -1314,8 +1084,8 @@ public class AutoService extends AccessibilityService {
                 break;
             }
             case "login": {
-                // 一次做完：填账号 -> 填密码 -> 点登录。
-                // 定位顺序：自动识别（按颜色，适配任意分辨率）-> 按文字 -> 固定比例坐标。
+                // 填账号 -> 填密码 -> 点登录。
+                // 定位顺序：颜色自动识别（适配任意分辨率）-> 界面文字 -> 固定比例坐标。
                 if (curUser == null || curUser.length() == 0) {
                     Logger.w("当前没有账号，跳过登录");
                     break;
@@ -1332,7 +1102,6 @@ public class AutoService extends AccessibilityService {
                     }
                 }
 
-                // ---- 账号框 ----
                 boolean okU = false;
                 if (ui != null) {
                     clickPx(ui[0], ui[1]);
@@ -1349,7 +1118,6 @@ public class AutoService extends AccessibilityService {
                 inputText(curUser, true);
                 sleep(400);
 
-                // ---- 密码框 ----
                 boolean okP = false;
                 if (ui != null) {
                     clickPx(ui[2], ui[3]);
@@ -1366,7 +1134,6 @@ public class AutoService extends AccessibilityService {
                 inputText(curPass, true);
                 sleep(400);
 
-                // ---- 登录按钮 ----
                 boolean clicked = false;
                 if (ui != null) {
                     clickPx(ui[4], ui[5]);
@@ -1387,14 +1154,13 @@ public class AutoService extends AccessibilityService {
                             (float) s.optDouble("btnY", 0.554));
                 }
                 sleep(s.optInt("waitAfter", 6000));
-                Logger.i("登录动作完成，等待进入游戏");
+                Logger.i("登录动作完成");
                 break;
             }
             case "findimg":
             case "findimage": {
                 String tpl = s.optString("tpl", s.optString("text", ""));
-                double tol = s.optDouble("tolerance", 0.82);
-                boolean hit = findImage(tpl, tol);
+                boolean hit = findImage(tpl, s.optDouble("tolerance", 0.82));
                 Logger.i("找图「" + tpl + "」: " + (hit ? "命中并点击" : "未命中"));
                 break;
             }
