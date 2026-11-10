@@ -51,8 +51,11 @@ jobs:
       - name: 编译 Debug APK
         run: gradle assembleDebug --no-daemon --stacktrace
 
-      # 产物同时准备两个名字：中文名给人看，英文名给 Release 用
-      # （GitHub 的 Release 附件名只接受 ASCII，中文会被服务端剥离）
+      # 产物三个名字：
+      # dist/修仙脚本工具.apk  —— 给人看的正式名，安装后在桌面显示「修仙脚本工具」
+      # dist/xiuxian-script.apk —— Release 附件名（GitHub 只接受 ASCII，中文会被剥离成 default.apk）
+      # dist/修仙脚本工具.zip   —— 我们自己打的包，zip 里带 UTF-8 文件名标记，
+      #                            解压后就是「修仙脚本工具.apk」，不会显示成乱码
       - name: 整理产物
         run: |
           mkdir -p dist
@@ -63,13 +66,20 @@ jobs:
           fi
           cp "$SRC" "dist/修仙脚本工具.apk"
           cp "$SRC" "dist/xiuxian-script.apk"
+          cd dist
+          # -X 去掉多余属性，Info-ZIP 会给中文名打上 UTF-8 标记，Windows 解压不乱码
+          zip -X -q "修仙脚本工具.zip" "修仙脚本工具.apk"
+          cd ..
           ls -l dist/
+          unzip -l "dist/修仙脚本工具.zip"
 
+      # artifact 名用纯 ASCII，避免 GitHub 打包下载时把中文名压成乱码；
+      # 里面装的是我们自己打的 zip，解开后 apk 名仍是「修仙脚本工具.apk」
       - name: 上传 APK
         uses: actions/upload-artifact@v4
         with:
-          name: 修仙脚本工具
-          path: dist/修仙脚本工具.apk
+          name: xiuxian-script-tool
+          path: dist/修仙脚本工具.zip
           if-no-files-found: error
 
       # 额外发一个 Release：手机上点链接就能直接下载，不用登录 GitHub
