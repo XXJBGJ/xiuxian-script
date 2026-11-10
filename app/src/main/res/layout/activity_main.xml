@@ -1,4 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  主界面布局（构建 50 修正）
+  改动原因：原来所有按钮直接堆在根 LinearLayout 里，360x600 的小屏上按钮占满了屏幕，
+  底部的「运行日志」区域被挤成 0 高度、整块跑出屏幕，所以用户看不到日志。
+  现在把按钮区装进一个可滚动的容器（占一半），日志区固定占另一半，两边都能看。
+-->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
@@ -11,13 +17,13 @@
         android:layout_height="wrap_content"
         android:paddingBottom="6dp"
         android:text="正在读取状态..."
-        android:textSize="13sp" />
+        android:textSize="12sp" />
 
     <TextView
         android:id="@+id/tv_game"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:paddingBottom="4dp"
+        android:paddingBottom="2dp"
         android:text="当前游戏: --"
         android:textSize="12sp"
         android:textStyle="bold" />
@@ -26,105 +32,150 @@
         android:id="@+id/sp_game"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginBottom="6dp" />
+        android:layout_marginBottom="4dp" />
 
-    <Button
-        android:id="@+id/btn_scan"
+    <!-- 按钮区：可上下滚动，不挤占日志空间 -->
+    <ScrollView
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginBottom="6dp"
-        android:text="扫描并选择游戏"
-        android:textSize="13sp" />
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:scrollbars="vertical">
 
-    <Button
-        android:id="@+id/btn_library"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginBottom="6dp"
-        android:text="安装包库（各游戏历史版本）"
-        android:textSize="13sp" />
-
-    <Button
-        android:id="@+id/btn_accounts"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginBottom="6dp"
-        android:text="账号管理（按游戏分别保存）"
-        android:textSize="13sp" />
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal">
-
-        <Button
-            android:id="@+id/btn_service"
-            android:layout_width="0dp"
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="无障碍设置"
-            android:textSize="13sp" />
+            android:orientation="vertical">
 
-        <Button
-            android:id="@+id/btn_overlay"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="悬浮窗权限"
-            android:textSize="13sp" />
-    </LinearLayout>
+            <Button
+                android:id="@+id/btn_scan"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="6dp"
+                android:text="扫描并选择游戏"
+                android:textSize="13sp" />
 
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal">
+            <Button
+                android:id="@+id/btn_library"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="6dp"
+                android:text="安装包库（各游戏历史版本）"
+                android:textSize="13sp" />
 
-        <Button
-            android:id="@+id/btn_float"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="显示悬浮窗"
-            android:textSize="13sp" />
+            <Button
+                android:id="@+id/btn_accounts"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="6dp"
+                android:text="账号管理（按游戏分别保存）"
+                android:textSize="13sp" />
 
-        <Button
-            android:id="@+id/btn_config"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="配置"
-            android:textSize="13sp" />
-    </LinearLayout>
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
 
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal">
+                <Button
+                    android:id="@+id/btn_service"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="无障碍设置"
+                    android:textSize="13sp" />
 
-        <Button
-            android:id="@+id/btn_start"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="启动脚本"
-            android:textSize="13sp"
-            android:textStyle="bold" />
+                <Button
+                    android:id="@+id/btn_overlay"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="悬浮窗权限"
+                    android:textSize="13sp" />
+            </LinearLayout>
 
-        <Button
-            android:id="@+id/btn_stop"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="停止脚本"
-            android:textSize="13sp" />
-    </LinearLayout>
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btn_float"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="显示悬浮窗"
+                    android:textSize="13sp" />
+
+                <Button
+                    android:id="@+id/btn_config"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="配置"
+                    android:textSize="13sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btn_start"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="启动脚本"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+
+                <Button
+                    android:id="@+id/btn_stop"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="停止脚本"
+                    android:textSize="13sp" />
+            </LinearLayout>
+
+            <!-- 日志三兄弟：复制（直接发我）/ 导出成文件 / 清空 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btn_log_copy"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="复制日志"
+                    android:textSize="12sp" />
+
+                <Button
+                    android:id="@+id/btn_log_export"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="导出日志"
+                    android:textSize="12sp" />
+
+                <Button
+                    android:id="@+id/btn_clearlog"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="清空日志"
+                    android:textSize="12sp" />
+            </LinearLayout>
+        </LinearLayout>
+    </ScrollView>
 
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:paddingTop="6dp"
         android:paddingBottom="4dp"
-        android:text="运行日志"
+        android:text="运行日志（每一行是一次动作，越往下越新）"
         android:textSize="12sp"
         android:textStyle="bold" />
 
@@ -145,12 +196,4 @@
             android:textSize="11sp"
             android:typeface="monospace" />
     </ScrollView>
-
-    <Button
-        android:id="@+id/btn_clearlog"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="6dp"
-        android:text="清空日志"
-        android:textSize="13sp" />
 </LinearLayout>
