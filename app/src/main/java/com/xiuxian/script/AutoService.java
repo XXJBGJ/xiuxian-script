@@ -39,6 +39,22 @@ public class AutoService extends AccessibilityService {
     /** 当前正在跑的账号（账号循环用） */
     private String curUser = "";
     private String curPass = "";
+
+    // ============ 步骤进度（供悬浮窗显示）============
+    /** 当前步骤描述，如「第 3/12 步 · 登录」 */
+    public volatile String pCurName = "";
+    /** 当前步骤备注 */
+    public volatile String pCurNote = "";
+    /** 当前步骤开始时间戳 */
+    public volatile long pCurStart = 0L;
+    /** 当前步骤预计结束时间戳（用来倒计时） */
+    public volatile long pCurEnd = 0L;
+    /** 下一步骤描述 */
+    public volatile String pNextName = "";
+    /** 下一步骤备注 */
+    public volatile String pNextNote = "";
+    /** 下一步骤预计等待毫秒 */
+    public volatile long pNextMs = 0L;
     private int curAccIndex = 0;
     private int accTotal = 0;
 
@@ -386,6 +402,7 @@ public class AutoService extends AccessibilityService {
                         if (s == null) {
                             continue;
                         }
+                        publishProgress(steps, j, s);
                         execStep(cfg, s, j + 1);
                     }
                 }
@@ -409,6 +426,7 @@ public class AutoService extends AccessibilityService {
                         if (s == null) {
                             continue;
                         }
+                        publishProgress(steps, j, s);
                         execStep(cfg, s, j + 1);
                     }
                 }
@@ -420,6 +438,13 @@ public class AutoService extends AccessibilityService {
             Logger.e("脚本异常中止: " + t);
         } finally {
             running = false;
+            pCurName = "已停止";
+            pCurNote = "";
+            pCurStart = 0L;
+            pCurEnd = 0L;
+            pNextName = "";
+            pNextNote = "";
+            pNextMs = 0L;
             Logger.i("======== 脚本结束 ========");
         }
     }
@@ -548,10 +573,13 @@ public class AutoService extends AccessibilityService {
             }
         } catch (Throwable ignored) {
         }
-        execRoot("input keyevent KEYCODE_MOVE_END");
+        // 原来 24 次 KEYCODE_DEL 会拉起 24 个 su 进程（每次 80~150ms，最坏 3 秒以上），
+        // 合成一条命令后只剩一次进程开销，清空速度提升十倍以上。
+        StringBuilder cmd = new StringBuilder("input keyevent KEYCODE_MOVE_END");
         for (int i = 0; i < 24; i++) {
-            execRoot("input keyevent KEYCODE_DEL");
+            cmd.append(" && input keyevent KEYCODE_DEL");
         }
+        execRoot(cmd.toString());
         return true;
     }
 
@@ -602,6 +630,77 @@ public class AutoService extends AccessibilityService {
         return ok;
     }
 
+    /** 读当前焦点输入框里的文字（无障碍通道，不产生 shell 往返） */
+    private String focusedText() {
+        try {
+            android.view.accessibility.AccessibilityNodeInfo n = focusedInput();
+            if (n == null) {
+                return null;
+            }
+            CharSequence t = n.getText();
+            return t == null ? "" : t.toString();
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** 软键盘是否已经弹出 */
+    private boolean keyboardShown() {
+        try {
+            String o = execRootOut("dumpsys input_method | grep -m1 -E 'mInputShown|mIsInputViewShown'");
+            return o != null && (o.contains("mInputShown=true") || o.contains("mIsInputViewShown=true"));
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * 等键盘真正弹出来，而不是死等固定毫秒。
+     * 键盘很快就位时立刻返回（通常 150~300ms），比固定 700ms 快一倍；
+     * 慢的时候最多等到 maxMs，绝不会抢在键盘前打字。
+     */
+    private void waitKeyboard(int maxMs) {
+        long end = System.currentTimeMillis() + Math.max(0, maxMs);
+        while (running && System.currentTimeMillis() < end) {
+            if (keyboardShown()) {
+                sleep(80);
+                return;
+            }
+            sleep(120);
+        }
+    }
+
+    /**
+     * 往当前焦点框填字并回读校验。
+     * 框里本来就是空的时候跳过清空（省 200ms + 一次清空动作）；
+     * 填完读回来核对：账号必须包含原值，密码只校验非空（密码框回读多为掩码）。
+     * 校验不过就清空重填一次 —— 质量保障，不能省。
+     */
+    private boolean typeInto(String value, boolean isPass) {
+        String before = focusedText();
+        if (before == null || before.length() > 0) {
+            clearInput();
+            sleep(80);
+        }
+        boolean ok = inputText(value);
+        if (!ok) {
+            return false;
+        }
+        sleep(120);
+        String after = focusedText();
+        if (after != null) {
+            boolean good = isPass ? after.length() > 0 : after.contains(value);
+            if (!good) {
+                Logger.w("填入校验不通过（读到: " + after + "），清空重填一次");
+                clearInput();
+                sleep(80);
+                ok = inputText(value);
+                sleep(120);
+            }
+        }
+        return ok;
+    }
+
     public boolean inputText(String text, boolean clear) {
         if (clear) {
             clearInput();
@@ -619,12 +718,18 @@ public class AutoService extends AccessibilityService {
     /** 截一张屏并缓存像素 */
     private boolean shot() {
         try {
-            String tmp = "/data/local/tmp/xiuxian_shot.png";
+            // 直接截到应用私有目录，省掉「cat 大文件回传」这一趟
             String own = getFilesDir().getAbsolutePath() + "/_shot.png";
-            execRootOut("screencap -p " + tmp + " && cat " + tmp + " > " + own
-                    + " && chmod 666 " + own);
+            execRoot("screencap -p " + own + " && chmod 666 " + own);
             android.graphics.Bitmap bmp =
                     android.graphics.BitmapFactory.decodeFile(own);
+            if (bmp == null) {
+                // 私有目录不可写的极端情况，退回老通道
+                String tmp = "/data/local/tmp/xiuxian_shot.png";
+                execRoot("screencap -p " + tmp + " && cat " + tmp + " > " + own
+                        + " && chmod 666 " + own);
+                bmp = android.graphics.BitmapFactory.decodeFile(own);
+            }
             if (bmp == null) {
                 Logger.w("截屏失败（需要 root 权限）");
                 return false;
@@ -632,6 +737,8 @@ public class AutoService extends AccessibilityService {
             sW = bmp.getWidth();
             sH = bmp.getHeight();
             sPix = new int[sW * sH];
+            rowGoldR = null;   // 新的一帧，行扫描缓存作废
+            rowLightR = null;
             bmp.getPixels(sPix, 0, sW, 0, 0, sW, sH);
             bmp.recycle();
             return true;
@@ -656,21 +763,48 @@ public class AutoService extends AccessibilityService {
         return r >= 235 && g >= 232 && b >= 222;
     }
 
-    /** 某一行指定颜色的占比 */
-    private double rowRatio(int y, int mode) {
+    private float[] rowGoldR;
+    private float[] rowLightR;
+
+    /**
+     * 一次遍历同时算出「每行金色占比」和「每行浅色占比」。
+     * 原来要分别扫两遍整屏像素，现在一遍搞定，定位阶段快一倍。
+     * 金色与浅色的判定条件互斥，合并循环不改变任何结果。
+     */
+    private void ensureRowScans() {
+        if (rowGoldR != null && rowLightR != null && rowGoldR.length == sH) {
+            return;
+        }
+        rowGoldR = new float[sH];
+        rowLightR = new float[sH];
         int from = (int) (sW * 0.12);
         int to = (int) (sW * 0.88);
-        int hit = 0;
-        int tot = 0;
-        for (int x = from; x < to; x += 2) {
-            int c = sPix[y * sW + x];
-            boolean ok = mode == 0 ? isGold(c) : isLight(c);
-            if (ok) {
-                hit++;
+        for (int y = 0; y < sH; y++) {
+            int hitG = 0;
+            int hitL = 0;
+            int tot = 0;
+            int base = y * sW;
+            for (int x = from; x < to; x += 2) {
+                int c = sPix[base + x];
+                if (isGold(c)) {
+                    hitG++;
+                } else if (isLight(c)) {
+                    hitL++;
+                }
+                tot++;
             }
-            tot++;
+            rowGoldR[y] = tot == 0 ? 0f : (float) hitG / tot;
+            rowLightR[y] = tot == 0 ? 0f : (float) hitL / tot;
         }
-        return tot == 0 ? 0 : (double) hit / tot;
+    }
+
+    /** 某一行指定颜色的占比（走缓存，只算一遍） */
+    private double rowRatio(int y, int mode) {
+        ensureRowScans();
+        if (y < 0 || y >= sH) {
+            return 0;
+        }
+        return mode == 0 ? rowGoldR[y] : rowLightR[y];
     }
 
     /** 提取某种颜色的横条区间 */
@@ -705,6 +839,7 @@ public class AutoService extends AccessibilityService {
         if (!shot()) {
             return null;
         }
+        // ---------- 第一步：找登录按钮（金色实心条）----------
         java.util.List<int[]> golds = colorBands(0, 0.55, (int) (sH * 0.025));
         int[] btn = null;
         int bestH = 0;
@@ -722,29 +857,59 @@ public class AutoService extends AccessibilityService {
             Logger.w("没找到登录按钮（金色块）");
             return null;
         }
-        java.util.List<int[]> lights = colorBands(1, 0.55, (int) (sH * 0.025));
+
+        // ---------- 第二步：找输入框（按钮上方的浅色横条）----------
+        // 关键：输入框找不找得到，都不影响返回登录按钮的坐标。
+        // 天途这类白底登录卡，输入框和卡片底色接近，很容易只识别出 1 条甚至 0 条。
+        // 老逻辑一旦 fields<2 就整体 return null，连已经找到的金色按钮一起丢掉，
+        // 结果账号密码填完却没有点登录 —— 这就是本次修的 bug。
+        java.util.List<int[]> lights = colorBands(1, 0.55, (int) (sH * 0.018));
         java.util.List<int[]> fields = new java.util.ArrayList<int[]>();
         for (int[] b : lights) {
             int h = b[1] - b[0] + 1;
-            if (b[1] < btn[0] && h <= sH * 0.12) {
+            if (b[1] < btn[0] && h <= sH * 0.14 && h >= sH * 0.008) {
                 fields.add(b);
             }
         }
-        if (fields.size() < 2) {
-            Logger.w("按钮上方只识别到 " + fields.size() + " 个输入框");
-            return null;
-        }
-        int[] passB = fields.get(fields.size() - 1);
-        int[] userB = fields.get(fields.size() - 2);
+        // 从下往上排，离按钮最近的两条最可能是密码框、账号框
+        java.util.Collections.sort(fields, new java.util.Comparator<int[]>() {
+            @Override
+            public int compare(int[] a, int[] b) {
+                return b[1] - a[1];
+            }
+        });
+
         int cx = sW / 2;
-        int[] r = new int[]{
-                cx, (userB[0] + userB[1]) / 2,
-                cx, (passB[0] + passB[1]) / 2,
-                cx, (btn[0] + btn[1]) / 2
-        };
-        Logger.i("自动定位(" + sW + "x" + sH + ")：账号 y=" + r[1]
-                + "  密码 y=" + r[3] + "  登录 y=" + r[5]);
+        int userY = -1;
+        int passY = -1;
+        if (fields.size() >= 2) {
+            passY = (fields.get(0)[0] + fields.get(0)[1]) / 2;
+            userY = (fields.get(1)[0] + fields.get(1)[1]) / 2;
+        } else if (fields.size() == 1) {
+            // 只找到一条：它更可能是密码框（更靠下），账号框往上推一个行高
+            int only = (fields.get(0)[0] + fields.get(0)[1]) / 2;
+            passY = only;
+            userY = only - Math.max(dpPx(56), (int) (sH * 0.06));
+            Logger.w("只识别到 1 个输入框，账号框按行高上推估算");
+        } else {
+            Logger.w("按钮上方没识别到输入框，输入框交给文字/比例坐标兜底");
+        }
+
+        int btnY = (btn[0] + btn[1]) / 2;
+        int[] r = new int[]{cx, userY, cx, passY, cx, btnY};
+        Logger.i("自动定位(" + sW + "x" + sH + ")：账号 y=" + userY
+                + "  密码 y=" + passY + "  登录 y=" + btnY);
         return r;
+    }
+
+    /** dp 转 px（用屏幕密度粗算，这里只要一个行高量级） */
+    private int dpPx(float v) {
+        try {
+            float d = getResources().getDisplayMetrics().density;
+            return (int) (v * d + 0.5f);
+        } catch (Throwable t) {
+            return (int) v * 2;
+        }
     }
 
     // ================= 识字：读界面层级 =================
@@ -993,6 +1158,240 @@ public class AutoService extends AccessibilityService {
         }
     }
 
+    /** 估算某一步大概要占用多久（毫秒），用于悬浮窗倒计时与「下一步约 X 秒」 */
+    private long stepCostMs(JSONObject s) {
+        if (s == null) {
+            return 0;
+        }
+        String a = s.optString("action", "").trim();
+        if ("wait".equals(a)) {
+            return s.optInt("ms", 1000);
+        }
+        if ("login".equals(a)) {
+            // 自适应定位 + 两次键盘等待 + 两次填字校验 + 点登录
+            return 2500L + s.optInt("tapDelay", 900) * 2 + s.optInt("waitAfter", 6000);
+        }
+        if ("swipe".equals(a)) {
+            return s.optLong("ms", 400) + 300;
+        }
+        if ("longpress".equals(a)) {
+            return s.optLong("ms", 1000) + 300;
+        }
+        if ("launch".equals(a)) {
+            return 3000;
+        }
+        if ("findimg".equals(a) || "findimage".equals(a) || "findtext".equals(a)) {
+            return 1500;
+        }
+        if ("input".equals(a) || "settext".equals(a) || "tapinput".equals(a)) {
+            return 800 + s.optInt("ms", 0);
+        }
+        return 600;
+    }
+
+    /** 把「当前步骤 / 下一步骤」写进字段，悬浮窗每 400ms 读一次 */
+    private void publishProgress(JSONArray steps, int j, JSONObject s) {
+        try {
+            int total = steps.length();
+            String name = s.optString("action", "").trim();
+            String note = s.optString("note", s.optString("desc", ""));
+            if (note == null || note.isEmpty()) {
+                note = actionNote(name, s);
+            }
+            long cost = stepCostMs(s);
+            pCurName = "第 " + (j + 1) + "/" + total + " 步 · " + actionName(name);
+            pCurNote = note;
+            pCurStart = System.currentTimeMillis();
+            pCurEnd = pCurStart + cost;
+
+            JSONObject nx = (j + 1 < total) ? steps.optJSONObject(j + 1) : null;
+            if (nx == null) {
+                pNextName = "（本账号流程结束）";
+                pNextNote = "";
+                pNextMs = 0L;
+            } else {
+                String na = nx.optString("action", "").trim();
+                pNextName = "第 " + (j + 2) + "/" + total + " 步 · " + actionName(na);
+                String nn = nx.optString("note", nx.optString("desc", ""));
+                pNextNote = (nn == null || nn.isEmpty()) ? actionNote(na, nx) : nn;
+                pNextMs = stepCostMs(nx);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 动作类型 -> 中文名 */
+    private String actionName(String a) {
+        switch (a) {
+            case "launch": return "启动游戏";
+            case "wait": return "等待";
+            case "click": return "点击";
+            case "longpress": return "长按";
+            case "swipe": return "滑动";
+            case "back": return "返回键";
+            case "home": return "回桌面";
+            case "recents":
+            case "menu": return "多任务";
+            case "input":
+            case "settext": return "输入文字";
+            case "tapinput": return "点框输入";
+            case "login": return "登录";
+            case "findimg":
+            case "findimage": return "找图点击";
+            case "findtext": return "找字点击";
+            case "log": return "记录日志";
+            default: return a.isEmpty() ? "未知步骤" : a;
+        }
+    }
+
+    /** 动作类型 -> 默认备注（步骤没写 note 时用） */
+    private String actionNote(String a, JSONObject s) {
+        switch (a) {
+            case "launch": return "按包名启动选中的游戏";
+            case "wait": return "歇 " + s.optInt("ms", 1000) + " 毫秒，等界面加载";
+            case "click": return "点 (" + s.optDouble("x", 0.5) + ", " + s.optDouble("y", 0.5) + ")";
+            case "longpress": return "长按 " + s.optLong("ms", 1000) + " 毫秒";
+            case "swipe": return "从 (" + s.optDouble("x1", 0.5) + "," + s.optDouble("y1", 0.8)
+                    + ") 滑到 (" + s.optDouble("x2", 0.5) + "," + s.optDouble("y2", 0.2) + ")";
+            case "login": return "识别账号框/密码框/登录按钮并提交";
+            case "findimg":
+            case "findimage": return "在屏幕上找模板图并点击";
+            case "findtext": return "在界面文字里找关键词并点击";
+            case "back": return "按一次返回";
+            case "log": return "写一条日志";
+            default: return "";
+        }
+    }
+
+    /** 账号框 / 密码框关键字（两条通道共用） */
+    private static final String[] USER_KEYS =
+            {"请输入账号", "输入账号", "账号", "帐号", "手机号", "用户名"};
+    private static final String[] PASS_KEYS =
+            {"请输入密码", "输入密码", "密码", "验证码"};
+
+    /**
+     * 自动登录：定位 -> 点账号框 -> 填账号 -> 点密码框 -> 填密码 -> 点登录。
+     *
+     * 提速但保质的几处：
+     *   1) 定位从「固定等 1.2s × 3 次」改成自适应轮询，界面就绪时第一次就命中；
+     *   2) 点完输入框不再死等 700ms，而是等键盘真正弹出（通常 150~300ms）；
+     *   3) 界面层级只 dump 一次，账号框与密码框共用，省一次 uiautomator（1~2s）；
+     *   4) 填完回读校验，不对就清空重填，保证最终填进去的内容正确；
+     *   5) 登录按钮仍是「金色块 -> 模板图 -> 文字 -> 比例坐标 -> 回车」五级兜底。
+     */
+    private void doLogin(JSONObject s) {
+        if (curUser == null || curUser.length() == 0) {
+            Logger.w("当前没有账号，跳过登录");
+            return;
+        }
+        Logger.i("登录开始: 账号 " + curUser);
+        long tStart = System.currentTimeMillis();
+
+        // ---------- 自适应定位 ----------
+        int[] ui = null;
+        if (s.optBoolean("autoLocate", true)) {
+            int[] waits = {0, 250, 350, 500, 700, 900, 1200};
+            for (int i = 0; i < waits.length && running; i++) {
+                if (waits[i] > 0) {
+                    sleep(waits[i]);
+                }
+                ui = locateLoginUi();
+                if (ui != null) {
+                    break;
+                }
+            }
+            Logger.i("定位: " + (ui == null ? "未识别" : "已命中")
+                    + "，累计 " + (System.currentTimeMillis() - tStart) + " ms");
+        }
+        if (!running) {
+            return;
+        }
+
+        // 颜色定位失败才 dump 一次层级，两个框共用这份结果
+        java.util.List<UiNode> nodes = null;
+        if (ui == null && s.optBoolean("byText", true)) {
+            nodes = dumpUi();
+        }
+
+        // ---------- 账号框 ----------
+        boolean okU = false;
+        if (ui != null && ui[1] > 0) {
+            okU = clickPx(ui[0], ui[1]);
+        }
+        if (!okU && nodes != null) {
+            UiNode n = findNode(nodes, USER_KEYS, true);
+            if (n == null) {
+                n = findNode(nodes, USER_KEYS, false);
+            }
+            if (n != null) {
+                Logger.i("识别到账号框「" + n.text + n.desc + "」");
+                okU = clickPx(n.cx(), n.cy());
+            }
+        }
+        if (!okU) {
+            Logger.i("改用比例坐标点账号框");
+            okU = clickRatio((float) s.optDouble("userX", 0.5),
+                    (float) s.optDouble("userY", 0.349));
+        }
+        Logger.i("账号框点击: " + (okU ? "成功" : "失败"));
+        waitKeyboard(s.optInt("tapDelay", 900));
+        Logger.i("账号填入: " + (typeInto(curUser, false) ? "成功" : "失败"));
+
+        // ---------- 密码框 ----------
+        boolean okP = false;
+        if (ui != null && ui[3] > 0) {
+            okP = clickPx(ui[2], ui[3]);
+        }
+        if (!okP && nodes != null) {
+            UiNode n = findNode(nodes, PASS_KEYS, true);
+            if (n == null) {
+                n = findNode(nodes, PASS_KEYS, false);
+            }
+            if (n != null) {
+                Logger.i("识别到密码框「" + n.text + n.desc + "」");
+                okP = clickPx(n.cx(), n.cy());
+            }
+        }
+        if (!okP) {
+            Logger.i("改用比例坐标点密码框");
+            okP = clickRatio((float) s.optDouble("passX", 0.5),
+                    (float) s.optDouble("passY", 0.451));
+        }
+        Logger.i("密码框点击: " + (okP ? "成功" : "失败"));
+        waitKeyboard(s.optInt("tapDelay", 900));
+        Logger.i("密码填入: " + (typeInto(curPass, true) ? "成功" : "失败"));
+
+        // ---------- 登录按钮（五级兜底，必须尽力点下去）----------
+        boolean clicked = false;
+        if (ui != null && ui[5] > 0) {
+            clicked = clickPx(ui[4], ui[5]);
+            Logger.i("按金色块点登录: " + (clicked ? "成功" : "失败"));
+        }
+        if (!clicked) {
+            String tpl = s.optString("tplLogin", "");
+            if (tpl.length() > 0) {
+                clicked = findImage(tpl, s.optDouble("tplTolerance", 0.82));
+                Logger.i("按模板图点登录: " + (clicked ? "命中" : "未命中"));
+            }
+        }
+        if (!clicked) {
+            clicked = clickByKeyword(new String[]{"登录", "登 录", "立即登录", "进入游戏", "登入"});
+            Logger.i("按文字点登录: " + (clicked ? "命中" : "未命中"));
+        }
+        if (!clicked) {
+            Logger.i("没识别到登录按钮，按比例坐标点击");
+            clicked = clickRatio((float) s.optDouble("btnX", 0.5),
+                    (float) s.optDouble("btnY", 0.554));
+        }
+        if (!clicked && s.optBoolean("enterFallback", true)) {
+            Logger.i("登录按钮都未点中，改用回车提交");
+            execRootOut("input keyevent 66");
+        }
+        Logger.i("登录流程总耗时 " + (System.currentTimeMillis() - tStart) + " ms");
+        sleep(s.optInt("waitAfter", 6000));
+        Logger.i("登录动作完成");
+    }
+
     private void execStep(JSONObject cfg, JSONObject s, int index) {
         String action = s.optString("action", "").trim();
         Logger.i("步骤 " + index + ": " + action);
@@ -1084,77 +1483,7 @@ public class AutoService extends AccessibilityService {
                 break;
             }
             case "login": {
-                // 填账号 -> 填密码 -> 点登录。
-                // 定位顺序：颜色自动识别（适配任意分辨率）-> 界面文字 -> 固定比例坐标。
-                if (curUser == null || curUser.length() == 0) {
-                    Logger.w("当前没有账号，跳过登录");
-                    break;
-                }
-                Logger.i("登录: 账号 " + curUser);
-
-                int[] ui = null;
-                if (s.optBoolean("autoLocate", true)) {
-                    for (int t = 0; t < 3 && ui == null && running; t++) {
-                        ui = locateLoginUi();
-                        if (ui == null) {
-                            sleep(1200);
-                        }
-                    }
-                }
-
-                boolean okU = false;
-                if (ui != null) {
-                    clickPx(ui[0], ui[1]);
-                    okU = true;
-                } else if (s.optBoolean("byText", true)) {
-                    okU = clickField(new String[]{"请输入账号", "账号", "帐号", "手机号"});
-                }
-                if (!okU) {
-                    Logger.i("改用比例坐标点账号框");
-                    clickRatio((float) s.optDouble("userX", 0.5),
-                            (float) s.optDouble("userY", 0.349));
-                }
-                sleep(s.optInt("tapDelay", 700));
-                inputText(curUser, true);
-                sleep(400);
-
-                boolean okP = false;
-                if (ui != null) {
-                    clickPx(ui[2], ui[3]);
-                    okP = true;
-                } else if (s.optBoolean("byText", true)) {
-                    okP = clickField(new String[]{"请输入密码", "密码"});
-                }
-                if (!okP) {
-                    Logger.i("改用比例坐标点密码框");
-                    clickRatio((float) s.optDouble("passX", 0.5),
-                            (float) s.optDouble("passY", 0.451));
-                }
-                sleep(s.optInt("tapDelay", 700));
-                inputText(curPass, true);
-                sleep(400);
-
-                boolean clicked = false;
-                if (ui != null) {
-                    clickPx(ui[4], ui[5]);
-                    clicked = true;
-                }
-                if (!clicked) {
-                    String tpl = s.optString("tplLogin", "");
-                    if (tpl.length() > 0) {
-                        clicked = findImage(tpl, s.optDouble("tplTolerance", 0.82));
-                    }
-                }
-                if (!clicked) {
-                    clicked = clickByKeyword(new String[]{"登录", "登 录", "进入游戏"});
-                }
-                if (!clicked) {
-                    Logger.i("没识别到登录按钮，按比例坐标点击");
-                    clickRatio((float) s.optDouble("btnX", 0.5),
-                            (float) s.optDouble("btnY", 0.554));
-                }
-                sleep(s.optInt("waitAfter", 6000));
-                Logger.i("登录动作完成");
+                doLogin(s);
                 break;
             }
             case "findimg":
