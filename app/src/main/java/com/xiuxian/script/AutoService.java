@@ -55,6 +55,20 @@ public class AutoService extends AccessibilityService {
     public volatile String pNextNote = "";
     /** 下一步骤预计等待毫秒 */
     public volatile long pNextMs = 0L;
+    /** 第几轮 / 共几轮（悬浮窗「循环次数」用） */
+    public volatile int pLoopIdx = 0;
+    public volatile int pLoopTotal = 0;
+    /** 每轮之间的间隔毫秒（悬浮窗「循环的间隔时间」用） */
+    public volatile long pLoopGapMs = 0L;
+    /** 当前步骤内的执行次数与间隔（悬浮窗「执行次数和间隔时间」用） */
+    public volatile int pStepTimes = 0;
+    public volatile long pStepGapMs = 0L;
+
+    /** 暂停标志：暂停时不推进流程，但线程不退出 */
+    private volatile boolean paused = false;
+    /** 从第几个步骤开始跑（0 表示从第一个开始，长按悬浮窗可改） */
+    private volatile int startStepIndex = 0;
+
     private int curAccIndex = 0;
     private int accTotal = 0;
 
@@ -410,9 +424,77 @@ public class AutoService extends AccessibilityService {
             return;
         }
         running = false;
+        paused = false;
         Logger.w("收到停止指令");
         if (worker != null) {
             worker.interrupt();
+        }
+    }
+
+    /** 暂停：线程不退出，只是不再推进步骤 */
+    public void pauseScript() {
+        if (!running) {
+            Logger.w("脚本当前没有运行，无法暂停");
+            return;
+        }
+        paused = true;
+        Logger.w("已暂停（点「继续」接着跑）");
+    }
+
+    /** 继续 */
+    public void resumeScript() {
+        if (!running) {
+            Logger.w("脚本当前没有运行，无法继续");
+            return;
+        }
+        paused = false;
+        Logger.w("已继续");
+    }
+
+    public boolean isPaused() {
+        return paused;
+    }
+
+    /** 长按浮窗可指定从第几个步骤开始（1 起），下次启动生效 */
+    public void setStartStep(int stepOneBased) {
+        startStepIndex = Math.max(0, stepOneBased - 1);
+        Logger.i("下次启动从第 " + (startStepIndex + 1) + " 步开始");
+    }
+
+    public int getStartStep() {
+        return startStepIndex + 1;
+    }
+
+    /** 读当前步骤列表，供长按菜单列出任务名 */
+    public String[] stepTitles() {
+        try {
+            JSONObject cfg = loadConfig(this);
+            JSONArray steps = cfg.optJSONArray("steps");
+            if (steps == null) {
+                return new String[0];
+            }
+            String[] out = new String[steps.length()];
+            for (int i = 0; i < steps.length(); i++) {
+                JSONObject s = steps.optJSONObject(i);
+                String a = s == null ? "" : s.optString("action", "").trim();
+                String note = s == null ? "" : s.optString("note", s.optString("desc", ""));
+                String nm = actionName(a);
+                out[i] = (i + 1) + ". " + nm + (note == null || note.isEmpty() ? "" : (" · " + note));
+            }
+            return out;
+        } catch (Throwable t) {
+            return new String[0];
+        }
+    }
+
+    /** 暂停期间原地等待；停止则直接跳出 */
+    private void waitWhilePaused() {
+        while (paused && running) {
+            try {
+                Thread.sleep(120);
+            } catch (InterruptedException e) {
+                return;
+            }
         }
     }
 
@@ -445,12 +527,19 @@ public class AutoService extends AccessibilityService {
                     Logger.w("没有勾选任何账号，本次不切换账号，只按流程跑一轮");
                 }
                 Logger.i("共 " + steps.length() + " 个步骤，循环 " + loop + " 轮");
+                pLoopTotal = loop;
+                pLoopGapMs = cfg.optLong("loopGap", 0L);
                 for (int i = 0; i < loop && running; i++) {
+                    pLoopIdx = i + 1;
                     Logger.i("--- 第 " + (i + 1) + "/" + loop + " 轮 ---");
-                    for (int j = 0; j < steps.length() && running; j++) {
+                    for (int j = startStepIndex; j < steps.length() && running; j++) {
                         JSONObject s = steps.optJSONObject(j);
                         if (s == null) {
                             continue;
+                        }
+                        waitWhilePaused();
+                        if (!running) {
+                            break;
                         }
                         publishProgress(steps, j, s);
                         execStep(cfg, s, j + 1);
@@ -467,14 +556,21 @@ public class AutoService extends AccessibilityService {
                 curUser = a.user;
                 curPass = a.pass;
                 Logger.i("======== 账号 " + curAccIndex + "/" + accTotal + ": " + a.user + " ========");
+                pLoopTotal = loop;
+                pLoopGapMs = cfg.optLong("loopGap", 0L);
                 for (int i = 0; i < loop && running; i++) {
+                    pLoopIdx = i + 1;
                     if (loop > 1) {
                         Logger.i("--- 账号内第 " + (i + 1) + "/" + loop + " 轮 ---");
                     }
-                    for (int j = 0; j < steps.length() && running; j++) {
+                    for (int j = startStepIndex; j < steps.length() && running; j++) {
                         JSONObject s = steps.optJSONObject(j);
                         if (s == null) {
                             continue;
+                        }
+                        waitWhilePaused();
+                        if (!running) {
+                            break;
                         }
                         publishProgress(steps, j, s);
                         execStep(cfg, s, j + 1);
@@ -1253,6 +1349,9 @@ public class AutoService extends AccessibilityService {
             pCurNote = note;
             pCurStart = System.currentTimeMillis();
             pCurEnd = pCurStart + cost;
+            // 重复执行类步骤：次数与间隔（悬浮窗「执行次数和间隔时间」用）
+            pStepTimes = Math.max(0, s.optInt("times", s.optInt("repeat", 0)));
+            pStepGapMs = Math.max(0L, s.optLong("interval", s.optLong("gap", 0L)));
 
             JSONObject nx = (j + 1 < total) ? steps.optJSONObject(j + 1) : null;
             if (nx == null) {
@@ -1731,6 +1830,13 @@ public class AutoService extends AccessibilityService {
     private void sleep(int ms) {
         int left = Math.max(0, ms);
         while (left > 0 && running) {
+            if (paused) {
+                // 暂停时不计时，恢复后继续把这一步等完
+                waitWhilePaused();
+                if (!running) {
+                    return;
+                }
+            }
             int step = Math.min(100, left);
             try {
                 Thread.sleep(step);
