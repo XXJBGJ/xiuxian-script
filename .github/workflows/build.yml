@@ -51,8 +51,9 @@ jobs:
       - name: 编译 Debug APK
         run: gradle assembleDebug --no-daemon --stacktrace
 
-      # 把产物改成中文名，下载下来就是「修仙脚本工具.apk」而不是 app-debug.apk
-      - name: 重命名为中文安装包名
+      # 产物同时准备两个名字：中文名给人看，英文名给 Release 用
+      # （GitHub 的 Release 附件名只接受 ASCII，中文会被服务端剥离）
+      - name: 整理产物
         run: |
           mkdir -p dist
           SRC=$(find app/build/outputs/apk/debug -name "*.apk" -type f | head -1)
@@ -61,6 +62,7 @@ jobs:
             echo "没有找到 APK"; exit 1
           fi
           cp "$SRC" "dist/修仙脚本工具.apk"
+          cp "$SRC" "dist/xiuxian-script.apk"
           ls -l dist/
 
       - name: 上传 APK
@@ -79,7 +81,8 @@ jobs:
           body: |
             自动构建产物，点下面的 apk 直接下载安装。
 
-            - 适配任意分辨率/DPI（优先按界面文字与颜色识别，不依赖固定坐标）
-            - 支持按游戏分别管理账号，勾选后逐个运行
-          files: dist/修仙脚本工具.apk
+            - 自动登录：先按颜色识别出账号框、密码框和登录按钮，再填账号密码并点登录
+            - 适配任意分辨率/DPI：优先按界面颜色与文字定位，不依赖固定坐标
+            - 支持按游戏分别管理账号，勾选后逐个账号运行
+          files: dist/xiuxian-script.apk
           make_latest: true
