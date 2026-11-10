@@ -1,467 +1,838 @@
 package com.xiuxian.script;
 
 import android.content.Context;
-import android.graphics.PixelFormat;
+import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
-import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.DisplayMetrics;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.Button;
+import android.widget.CheckBox;
+import android.widget.CompoundButton;
 import android.widget.LinearLayout;
+import android.widget.SeekBar;
 import android.widget.TextView;
 
 /**
- * 悬浮窗（版本 3）：紧凑型小面板，尽量不挡游戏画面。
+ * 日志浮窗。
  *
- * 相比版本 2（210dp 宽、6 行、字号 10.5~12sp）：
- *   - 宽度固定 130dp，字号 7.5~8.5sp，整块面积约为原来的 35%；
- *   - 信息合并成 4 行，长文字自动省略号，不会撑宽；
- *   - 背景更透明（CC 透明度），压住游戏画面时仍能看见下面；
- *   - 默认宽度固定，不会因为文案长短忽大忽小；
- *   - 保留「收起成小球 / ×关闭 / 可拖动 / 启动停止」全部能力。
- *
- * 显示内容（4 行）：
- *   运行中 · 天途
- *   3/3 登录 · 还需 9.8s
- *   备注 识别账号框/密码框/登录按钮
- *   下一步 4/12 点击 · 0.8s
+ * 功能：
+ * 1. 显示脚本进度，显示内容可在「调整日志浮窗」里逐项勾选，字号/边框/透明度可调；
+ * 2. 可拖动，且任何时候都不会被拖出屏幕；
+ * 3. 修正上下拖动方向反转（底部对齐时 y 轴与手指方向相反，需取反）；
+ * 4. 自带「启动 / 暂停·继续 / 停止」三个按钮；
+ * 5. 单击打开「调整日志浮窗」设置，长按可选择从哪个任务开始。
  */
 public class FloatWindow {
 
-    /** 面板宽度（dp）：固定值，避免文案不同导致大小跳变 */
-    private static final int W_DP = 130;
+    private static FloatWindow inst;
 
     private final Context ctx;
     private final WindowManager wm;
+    private final Handler ui = new Handler(Looper.getMainLooper());
+
     private View root;
+    private TextView tvTitle;
+    private TextView tvBody;
+    private LinearLayout titleBar;
+    private LinearLayout bodyBox;
+    private LinearLayout ctrlBar;
+    private Button btnStart;
+    private Button btnPause;
+    private Button btnStop;
+
+    private boolean showing = false;
+    private boolean collapsed = false;
+
     private WindowManager.LayoutParams lp;
+    private FloatConfig cfg;
 
-    private LinearLayout panel;   // 展开后的全部内容（收起时隐藏）
+    /** 拖动 / 点击 / 长按 判定 */
+    private float downRawX;
+    private float downRawY;
+    private int startX;
+    private int startY;
+    private long downTime = 0L;
+    private boolean dragging = false;
+    private static final long LONG_PRESS_MS = 550L;
 
-    private TextView tvStatus;
-    private TextView tvCurStep;   // 本步 + 倒计时合并
-    private TextView tvCurNote;   // 备注
-    private TextView tvNextStep;  // 下一步 + 耗时合并
+    private final Runnable ticker = new Runnable() {
+        @Override
+        public void run() {
+            refresh();
+            if (showing && !collapsed) {
+                ui.postDelayed(this, 400);
+            }
+        }
+    };
 
-    private TextView ball;        // 收起状态下的小球
-    private boolean expanded = true;
+    private FloatWindow(Context c) {
+        this.ctx = c.getApplicationContext();
+        this.wm = (WindowManager) this.ctx.getSystemService(Context.WINDOW_SERVICE);
+        this.cfg = FloatConfig.load(this.ctx);
+    }
 
-    private Handler ticker;
-    private Runnable tickTask;
-
-    private static FloatWindow inst;
-
-    /** 全局唯一实例，Activity 重建也不丢状态 */
-    public static synchronized FloatWindow get(Context context) {
+    public static synchronized FloatWindow get(Context c) {
         if (inst == null) {
-            inst = new FloatWindow(context);
+            inst = new FloatWindow(c);
         }
         return inst;
     }
 
-    public FloatWindow(Context context) {
-        this.ctx = context.getApplicationContext();
-        this.wm = (WindowManager) this.ctx.getSystemService(Context.WINDOW_SERVICE);
+    public boolean isShowing() {
+        return showing;
     }
 
     public static int dp(Context c, float v) {
+        if (c == null) {
+            return (int) v;
+        }
         return (int) (v * c.getResources().getDisplayMetrics().density + 0.5f);
     }
 
-    public boolean isShowing() {
-        return root != null;
+    private int dpf(float v) {
+        return dp(ctx, v);
     }
 
-    public void show() {
-        if (Looper.myLooper() != Looper.getMainLooper()) {
-            new Handler(Looper.getMainLooper()).post(new Runnable() {
-                @Override
-                public void run() {
-                    show();
-                }
-            });
-            return;
+    /** 屏幕真实尺寸（含状态栏），拖动边界用 */
+    private int[] screen() {
+        int[] wh = new int[]{1080, 1920};
+        try {
+            DisplayMetrics dm = new DisplayMetrics();
+            wm.getDefaultDisplay().getRealMetrics(dm);
+            wh[0] = dm.widthPixels;
+            wh[1] = dm.heightPixels;
+        } catch (Throwable ignored) {
         }
-        if (root != null || wm == null) {
-            expand();
+        return wh;
+    }
+
+    // ==================== 显示 / 隐藏 ====================
+
+    public void show() {
+        if (showing && root != null) {
+            refresh();
             return;
         }
         try {
-            LinearLayout box = new LinearLayout(ctx);
-            box.setOrientation(LinearLayout.VERTICAL);
-            GradientDrawable bg = new GradientDrawable();
-            bg.setColor(0xCC0A0A0A);              // 更透明，少挡画面
-            bg.setCornerRadius(dp(ctx, 7));
-            bg.setStroke(dp(ctx, 1), 0x5500E676);
-            box.setBackground(bg);
-            int pad = dp(ctx, 5);
-            box.setPadding(pad, dp(ctx, 3), pad, dp(ctx, 4));
-
-            // ---------- 顶部标题行：进度 + 收起 + 关闭 ----------
-            LinearLayout headRow = new LinearLayout(ctx);
-            headRow.setOrientation(LinearLayout.HORIZONTAL);
-            headRow.setGravity(Gravity.CENTER_VERTICAL);
-
-            TextView title = new TextView(ctx);
-            title.setText("进度");
-            title.setTextColor(0xFF00E676);
-            title.setTextSize(9);
-            title.getPaint().setFakeBoldText(true);
-            title.setSingleLine(true);
-            LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(
-                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-            headRow.addView(title, tlp);
-
-            Button btnFold = smallButton("—", new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    collapse();
-                }
-            });
-            Button btnClose = smallButton("×", new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    hide();
-                }
-            });
-            headRow.addView(btnFold);
-            headRow.addView(btnClose);
-            box.addView(headRow);
-
-            // ---------- 收起态的小球 ----------
-            ball = new TextView(ctx);
-            ball.setText("脚本");
-            ball.setTextColor(0xFF00E676);
-            ball.setTextSize(9);
-            ball.setGravity(Gravity.CENTER);
-            GradientDrawable bb = new GradientDrawable();
-            bb.setColor(0xCC0A0A0A);
-            bb.setCornerRadius(dp(ctx, 14));
-            bb.setStroke(dp(ctx, 1), 0x5500E676);
-            ball.setBackground(bb);
-            ball.setPadding(dp(ctx, 7), dp(ctx, 3), dp(ctx, 7), dp(ctx, 3));
-            ball.setVisibility(View.GONE);
-            ball.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    expand();
-                }
-            });
-            box.addView(ball);
-
-            // ---------- 展开态内容（4 行） ----------
-            panel = new LinearLayout(ctx);
-            panel.setOrientation(LinearLayout.VERTICAL);
-            panel.setPadding(0, dp(ctx, 2), 0, 0);
-
-            tvStatus = infoRow(panel, 0xFFB9F6CA, "待机");
-            tvCurStep = infoRow(panel, 0xFFFFD54F, "--");
-            tvCurNote = infoRow(panel, 0xFF9E9E9E, "");
-            tvNextStep = infoRow(panel, 0xFF80D8FF, "");
-
-            LinearLayout btnRow = new LinearLayout(ctx);
-            btnRow.setOrientation(LinearLayout.HORIZONTAL);
-            btnRow.setPadding(0, dp(ctx, 3), 0, 0);
-
-            Button btnStart = smallButton("启动", new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    AutoService s = AutoService.get();
-                    if (s == null) {
-                        Logger.e("无障碍服务未开启，无法启动脚本");
-                        toast("请先在主界面开启无障碍服务");
-                        return;
-                    }
-                    s.startScript();
-                    refresh();
-                }
-            });
-            Button btnStop = smallButton("停止", new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    AutoService s = AutoService.get();
-                    if (s != null) {
-                        s.stopScript();
-                    }
-                    refresh();
-                }
-            });
-            btnRow.addView(btnStart);
-            btnRow.addView(btnStop);
-            panel.addView(btnRow);
-
-            box.addView(panel);
-
-            int type = Build.VERSION.SDK_INT >= 26
-                    ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-                    : WindowManager.LayoutParams.TYPE_PHONE;
-
-            lp = new WindowManager.LayoutParams(
-                    dp(ctx, W_DP),                       // 固定窄宽，不再随文案变化
-                    WindowManager.LayoutParams.WRAP_CONTENT,
-                    type,
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                            // 关键：非触摸模态。缺这一条，悬浮窗会把落在它范围内
-                            // （甚至整屏）的触摸都吃掉，游戏那边收不到点击，
-                            // 表现就是"脚本点了但没反应"，同时用户也觉得被挡住。
-                            | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                            | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-                    PixelFormat.TRANSLUCENT);
-            // 默认贴左下角：登录卡在屏幕中部（账号/密码/登录按钮都在中间），
-            // 放左上会压住「账号登录」标签和账号输入框，放左下基本不碰主要控件。
-            lp.gravity = Gravity.BOTTOM | Gravity.START;
-            lp.x = dp(ctx, 6);
-            lp.y = dp(ctx, 40);
-
-            // 拖动：按住整块移动（小球状态下也能拖）
-            box.setOnTouchListener(new View.OnTouchListener() {
-                private int startX;
-                private int startY;
-                private float downX;
-                private float downY;
-                private boolean dragging;
-
-                @Override
-                public boolean onTouch(View v, MotionEvent e) {
-                    switch (e.getAction()) {
-                        case MotionEvent.ACTION_DOWN:
-                            startX = lp.x;
-                            startY = lp.y;
-                            downX = e.getRawX();
-                            downY = e.getRawY();
-                            dragging = false;
-                            return true;
-                        case MotionEvent.ACTION_MOVE: {
-                            int dx = (int) (e.getRawX() - downX);
-                            int dy = (int) (e.getRawY() - downY);
-                            if (Math.abs(dx) > dp(ctx, 3) || Math.abs(dy) > dp(ctx, 3)) {
-                                dragging = true;
-                                lp.x = startX + dx;
-                                lp.y = startY + dy;
-                                try {
-                                    wm.updateViewLayout(root, lp);
-                                } catch (Throwable ignored) {
-                                }
-                            }
-                            return true;
-                        }
-                        case MotionEvent.ACTION_UP:
-                        case MotionEvent.ACTION_CANCEL:
-                            return dragging;
-                    }
-                    return false;
-                }
-            });
-
-            root = box;
-            try {
+            cfg = FloatConfig.load(ctx);
+            build();
+            if (!showing && root != null) {
                 wm.addView(root, lp);
-                Logger.i("悬浮窗已显示（紧凑版 " + W_DP + "dp），可拖动");
-            } catch (Throwable t) {
-                root = null;
-                Logger.e("悬浮窗添加失败（检查悬浮窗权限）: " + t);
-                return;
+                showing = true;
             }
-            expand();
-            startTicker();
+            ui.removeCallbacks(ticker);
+            ui.post(ticker);
         } catch (Throwable t) {
-            Logger.e("悬浮窗创建异常: " + t);
+            Logger.e("悬浮窗显示失败: " + t);
         }
     }
 
-    private Button smallButton(String text, View.OnClickListener l) {
+    public void hide() {
+        try {
+            ui.removeCallbacks(ticker);
+            if (root != null && showing) {
+                wm.removeView(root);
+            }
+        } catch (Throwable ignored) {
+        }
+        showing = false;
+    }
+
+    public void expand() {
+        collapsed = false;
+        if (bodyBox != null) {
+            bodyBox.setVisibility(View.VISIBLE);
+        }
+        if (ctrlBar != null) {
+            ctrlBar.setVisibility(View.VISIBLE);
+        }
+        clampAndApply();
+        refresh();
+        ui.removeCallbacks(ticker);
+        ui.post(ticker);
+    }
+
+    public void collapse() {
+        collapsed = true;
+        if (bodyBox != null) {
+            bodyBox.setVisibility(View.GONE);
+        }
+        if (ctrlBar != null) {
+            ctrlBar.setVisibility(View.GONE);
+        }
+        clampAndApply();
+    }
+
+    // ==================== 构建界面 ====================
+
+    private void build() {
+        LinearLayout box = new LinearLayout(ctx);
+        box.setOrientation(LinearLayout.VERTICAL);
+
+        // ---- 标题栏：拖动区 + 收起 / 关闭 ----
+        titleBar = new LinearLayout(ctx);
+        titleBar.setOrientation(LinearLayout.HORIZONTAL);
+        titleBar.setGravity(Gravity.CENTER_VERTICAL);
+
+        tvTitle = new TextView(ctx);
+        tvTitle.setText("修仙脚本");
+        tvTitle.setTextColor(0xFFFFFFFF);
+        tvTitle.setTextSize(Math.max(7f, cfg.fontSize - 1f));
+        titleBar.addView(tvTitle, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        Button btnFold = smallBtn("—");
+        btnFold.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (collapsed) {
+                    expand();
+                } else {
+                    collapse();
+                }
+            }
+        });
+        titleBar.addView(btnFold);
+
+        Button btnClose = smallBtn("×");
+        btnClose.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                hide();
+            }
+        });
+        titleBar.addView(btnClose);
+
+        box.addView(titleBar, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        // ---- 控制栏：启动 / 暂停·继续 / 停止 ----
+        ctrlBar = new LinearLayout(ctx);
+        ctrlBar.setOrientation(LinearLayout.HORIZONTAL);
+
+        btnStart = ctrlBtn("启动");
+        btnStart.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                AutoService s = AutoService.get();
+                if (s == null) {
+                    Logger.e("无障碍服务未连接，请先在主界面开启");
+                    expand();
+                    return;
+                }
+                if (s.isRunning()) {
+                    Logger.w("脚本已在运行中");
+                    return;
+                }
+                int gi = Games.selectedIndex(ctx);
+                if (!Games.isInstalled(ctx, gi)) {
+                    Logger.e("选中的游戏未安装: " + Games.pkg(gi));
+                    return;
+                }
+                s.startScript();
+                refresh();
+            }
+        });
+        ctrlBar.addView(btnStart, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        btnPause = ctrlBtn("暂停");
+        btnPause.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                AutoService s = AutoService.get();
+                if (s == null) {
+                    Logger.e("无障碍服务未连接");
+                    return;
+                }
+                if (s.isPaused()) {
+                    s.resumeScript();
+                } else {
+                    s.pauseScript();
+                }
+                refresh();
+            }
+        });
+        ctrlBar.addView(btnPause, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        btnStop = ctrlBtn("停止");
+        btnStop.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                AutoService s = AutoService.get();
+                if (s == null) {
+                    Logger.e("无障碍服务未连接");
+                    return;
+                }
+                s.stopScript();
+                refresh();
+            }
+        });
+        ctrlBar.addView(btnStop, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        box.addView(ctrlBar, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        // ---- 正文 ----
+        bodyBox = new LinearLayout(ctx);
+        bodyBox.setOrientation(LinearLayout.VERTICAL);
+        tvBody = new TextView(ctx);
+        tvBody.setTextColor(0xFFFFFFFF);
+        tvBody.setTextSize(cfg.fontSize);
+        tvBody.setPadding(dpf(4), dpf(2), dpf(4), dpf(2));
+        bodyBox.addView(tvBody);
+        box.addView(bodyBox, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        applyLook(box);
+
+        // ---- 拖动 / 单击 / 长按 ----
+        View.OnTouchListener touch = new View.OnTouchListener() {
+            @Override
+            public boolean onTouch(View v, MotionEvent e) {
+                switch (e.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        downRawX = e.getRawX();
+                        downRawY = e.getRawY();
+                        startX = lp.x;
+                        startY = lp.y;
+                        downTime = System.currentTimeMillis();
+                        dragging = false;
+                        return true;
+                    case MotionEvent.ACTION_MOVE:
+                        float dx = e.getRawX() - downRawX;
+                        float dy = e.getRawY() - downRawY;
+                        if (Math.abs(dx) > dpf(3) || Math.abs(dy) > dpf(3)) {
+                            dragging = true;
+                        }
+                        if (dragging && lp != null) {
+                            // 关键修正：底部对齐时 y 轴与手指方向相反，必须取反
+                            lp.x = startX + (int) dx;
+                            lp.y = startY - (int) dy;
+                            clampAndApply();
+                        }
+                        return true;
+                    case MotionEvent.ACTION_UP:
+                    case MotionEvent.ACTION_CANCEL:
+                        long held = System.currentTimeMillis() - downTime;
+                        boolean moved = dragging;
+                        dragging = false;
+                        if (!moved) {
+                            if (held >= LONG_PRESS_MS) {
+                                // 长按：选择从哪个任务开始
+                                showStartStepChooser();
+                            } else {
+                                // 单击：打开调整日志浮窗
+                                openSettings();
+                            }
+                        }
+                        return true;
+                    default:
+                        return false;
+                }
+            }
+        };
+        titleBar.setOnTouchListener(touch);
+        tvBody.setOnTouchListener(touch);
+
+        // ---- 窗口参数：底部左对齐 ----
+        lp = new WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                        | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                android.graphics.PixelFormat.TRANSLUCENT);
+        lp.gravity = Gravity.BOTTOM | Gravity.LEFT;
+        lp.x = dpf(8);
+        lp.y = dpf(24);
+
+        root = box;
+
+        box.post(new Runnable() {
+            @Override
+            public void run() {
+                clampAndApply();
+                refresh();
+            }
+        });
+    }
+
+    private Button smallBtn(String text) {
         Button b = new Button(ctx);
         b.setText(text);
-        b.setTextSize(8);
         b.setAllCaps(false);
+        b.setTextSize(9f);
+        b.setTextColor(0xFFFFFFFF);
+        b.setBackgroundColor(Color.TRANSPARENT);
+        b.setPadding(dpf(3), 0, dpf(3), 0);
         b.setMinWidth(0);
         b.setMinimumWidth(0);
         b.setMinHeight(0);
         b.setMinimumHeight(0);
-        b.setPadding(dp(ctx, 4), 0, dp(ctx, 4), 0);
-        b.setBackgroundColor(0x00000000);   // 去掉默认灰底，视觉更轻
-        b.setTextColor(0xFF9E9E9E);
-        b.setOnClickListener(l);
+        b.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, dpf(20)));
         return b;
     }
 
-    private TextView infoRow(LinearLayout parent, int color, String init) {
-        TextView tv = new TextView(ctx);
-        tv.setTextColor(color);
-        tv.setTextSize(8f);
-        tv.setSingleLine(true);
-        tv.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        tv.setText(init);
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
-        parent.addView(tv, p);
-        return tv;
+    private Button ctrlBtn(String text) {
+        Button b = new Button(ctx);
+        b.setText(text);
+        b.setAllCaps(false);
+        b.setTextSize(Math.max(7f, cfg.fontSize - 2f));
+        b.setTextColor(0xFFFFFFFF);
+        b.setBackgroundColor(Color.TRANSPARENT);
+        b.setPadding(0, 0, 0, 0);
+        b.setMinWidth(0);
+        b.setMinimumWidth(0);
+        b.setMinHeight(0);
+        b.setMinimumHeight(0);
+        return b;
     }
 
-    public void expand() {
-        expanded = true;
-        if (panel != null) {
-            panel.setVisibility(View.VISIBLE);
-        }
-        if (ball != null) {
-            ball.setVisibility(View.GONE);
-        }
-        refresh();
-    }
-
-    public void collapse() {
-        expanded = false;
-        if (panel != null) {
-            panel.setVisibility(View.GONE);
-        }
-        if (ball != null) {
-            ball.setVisibility(View.VISIBLE);
-            ball.setText("脚本 " + shortStep());
+    /** 背景、圆角、边框、透明度都按设置项来 */
+    private void applyLook(View v) {
+        GradientDrawable bg = new GradientDrawable();
+        bg.setShape(GradientDrawable.RECTANGLE);
+        int a = cfg.bgAlpha();
+        bg.setColor(Color.argb(a, 0x12, 0x12, 0x12));
+        int r = dpf(Math.max(2, cfg.borderSize));
+        bg.setCornerRadius(r);
+        int stroke = Math.max(1, cfg.borderSize / 2);
+        bg.setStroke(dpf(stroke), Color.argb(Math.min(0xFF, a + 0x40), 0xFF, 0xFF, 0xFF));
+        v.setBackgroundDrawable(bg);
+        if (tvBody != null) {
+            tvBody.setTextSize(cfg.fontSize);
         }
     }
 
-    private String shortStep() {
-        AutoService s = AutoService.get();
-        if (s == null) {
-            return "服务未开";
-        }
-        if (!s.isRunning()) {
-            return "待机";
-        }
-        String n = s.pCurName;
-        if (n == null || n.isEmpty()) {
-            return "运行中";
-        }
-        return n.length() > 12 ? n.substring(0, 12) : n;
-    }
-
-    private void startTicker() {
-        stopTicker();
-        ticker = new Handler(Looper.getMainLooper());
-        tickTask = new Runnable() {
-            @Override
-            public void run() {
-                refresh();
-                if (ticker != null) {
-                    ticker.postDelayed(this, 400);
-                }
-            }
-        };
-        ticker.postDelayed(tickTask, 400);
-    }
-
-    private void stopTicker() {
-        if (ticker != null && tickTask != null) {
-            ticker.removeCallbacks(tickTask);
-        }
-        ticker = null;
-        tickTask = null;
-    }
-
-    public void hide() {
-        if (Looper.myLooper() != Looper.getMainLooper()) {
-            new Handler(Looper.getMainLooper()).post(new Runnable() {
-                @Override
-                public void run() {
-                    hide();
-                }
-            });
-            return;
-        }
-        stopTicker();
-        if (root == null || wm == null) {
+    /** 位置钳制：任何方向都不允许把浮窗推出屏幕 */
+    private void clampAndApply() {
+        if (root == null || lp == null || !showing) {
             return;
         }
         try {
-            wm.removeView(root);
+            int[] wh = screen();
+            int w = root.getWidth();
+            int h = root.getHeight();
+            if (w <= 0) {
+                w = dpf(130);
+            }
+            if (h <= 0) {
+                h = dpf(60);
+            }
+            int maxX = Math.max(0, wh[0] - w);
+            int maxY = Math.max(0, wh[1] - h);
+            if (lp.x < 0) {
+                lp.x = 0;
+            }
+            if (lp.x > maxX) {
+                lp.x = maxX;
+            }
+            if (lp.y < 0) {
+                lp.y = 0;
+            }
+            if (lp.y > maxY) {
+                lp.y = maxY;
+            }
+            wm.updateViewLayout(root, lp);
         } catch (Throwable ignored) {
         }
-        root = null;
-        panel = null;
-        ball = null;
-        Logger.i("悬浮窗已关闭（可在主界面重新显示）");
     }
 
-    private static String fmt(double sec) {
-        if (sec < 0) {
-            sec = 0;
+    // ==================== 内容刷新 ====================
+
+    public void refresh() {
+        if (!showing || root == null) {
+            return;
+        }
+        try {
+            AutoService s = AutoService.get();
+            if (s != null) {
+                boolean run = s.isRunning();
+                if (btnStart != null) {
+                    btnStart.setText("启动");
+                    btnStart.setEnabled(!run);
+                    btnStart.setAlpha(run ? 0.4f : 1f);
+                }
+                if (btnPause != null) {
+                    btnPause.setText(s.isPaused() ? "继续" : "暂停");
+                    btnPause.setEnabled(run);
+                    btnPause.setAlpha(run ? 1f : 0.4f);
+                }
+                if (btnStop != null) {
+                    btnStop.setEnabled(run);
+                    btnStop.setAlpha(run ? 1f : 0.4f);
+                }
+            }
+            if (tvBody != null) {
+                tvBody.setText(s == null ? "服务未连接" : buildText(s, cfg));
+            }
+            applyLook(root);
+            clampAndApply();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 按勾选项拼出显示内容；小于 0.5 秒的时间不显示 */
+    private String buildText(AutoService s, FloatConfig c) {
+        StringBuilder out = new StringBuilder();
+        String nl = String.valueOf((char) 10);
+
+        if (c.showLoop && s.pLoopTotal > 0) {
+            out.append("循环 ").append(Math.max(1, s.pLoopIdx)).append("/").append(s.pLoopTotal).append(nl);
+        }
+        if (c.showLoopGap && s.pLoopGapMs >= 500) {
+            out.append("轮间隔 ").append(fmtSec(s.pLoopGapMs)).append("s").append(nl);
+        }
+
+        StringBuilder cur = new StringBuilder();
+        if (c.showCurStep && s.pCurName != null && s.pCurName.length() > 0) {
+            cur.append(s.pCurName);
+        }
+        if (c.showCurNote && s.pCurNote != null && s.pCurNote.length() > 0) {
+            if (cur.length() > 0) {
+                cur.append(':');
+            }
+            cur.append(s.pCurNote);
+        }
+        if (c.showCurWait && s.pCurEnd > 0) {
+            long left = s.pCurEnd - System.currentTimeMillis();
+            if (left >= 500) {
+                cur.append('(').append(fmtSec(left)).append("s)");
+            }
+        }
+        if (c.showCurTimes && s.pStepTimes > 0) {
+            cur.append(" x").append(s.pStepTimes);
+            if (s.pStepGapMs >= 500) {
+                cur.append('/').append(fmtSec(s.pStepGapMs)).append("s");
+            }
+        }
+        if (cur.length() > 0) {
+            out.append("当前:").append(cur).append(nl);
+        }
+
+        StringBuilder next = new StringBuilder();
+        if (c.showNextStep && s.pNextName != null && s.pNextName.length() > 0) {
+            next.append(s.pNextName);
+        }
+        if (c.showNextNote && s.pNextNote != null && s.pNextNote.length() > 0) {
+            if (next.length() > 0) {
+                next.append('/');
+            }
+            next.append(s.pNextNote);
+        }
+        if (next.length() > 0) {
+            out.append("下步:").append(next);
+        }
+
+        String t = out.toString().trim();
+        if (t.length() == 0) {
+            t = s.isPaused() ? "已暂停" : (s.isRunning() ? "运行中" : "等待开始");
+        }
+        return t;
+    }
+
+    private String fmtSec(long ms) {
+        double sec = ms / 1000.0;
+        if (Math.abs(sec - Math.rint(sec)) < 0.05) {
+            return String.valueOf((long) Math.rint(sec));
         }
         return String.format(java.util.Locale.US, "%.1f", sec);
     }
 
-    /** 刷新面板上的全部文字（每 400ms 由 ticker 调用一次） */
-    public void refresh() {
-        if (root == null) {
-            return;
-        }
-        AutoService s = AutoService.get();
-        String g = Games.selectedName(ctx);
-        if (g == null || g.isEmpty()) {
-            g = "未选择游戏";
-        }
+    // ==================== 长按：选择从哪个任务开始 ====================
 
+    private void showStartStepChooser() {
+        final AutoService s = AutoService.get();
         if (s == null) {
-            setText(tvStatus, "服务未开 · " + g);
-            setText(tvCurStep, "--");
-            setText(tvCurNote, "请先开无障碍");
-            setText(tvNextStep, "");
+            Logger.e("无障碍服务未连接");
             return;
         }
-
-        setText(tvStatus, (s.isRunning() ? "运行中 · " : "待机 · ") + g);
-
-        // 第 2 行：本步 + 倒计时（合并，省一行）
-        String cur = s.pCurName;
-        String curTxt = (cur == null || cur.isEmpty()) ? "--" : cur;
-        long now = System.currentTimeMillis();
-        String wait = "";
-        if (s.pCurEnd > now) {
-            wait = " · " + fmt((s.pCurEnd - now) / 1000.0) + "s";
-        } else if (s.pCurStart > 0 && s.isRunning()) {
-            wait = " · 已 " + fmt((now - s.pCurStart) / 1000.0) + "s";
+        final String[] titles = s.stepTitles();
+        if (titles.length == 0) {
+            Logger.e("当前流程没有可选的步骤");
+            return;
         }
-        setText(tvCurStep, curTxt + wait);
-
-        // 第 3 行：备注（过长截断，保证面板不被撑宽）
-        String note = s.pCurNote;
-        if (note != null && note.length() > 14) {
-            note = note.substring(0, 14) + "…";
+        // 「默认从最初开始」放第一项
+        final String[] items = new String[titles.length + 1];
+        items[0] = "默认：从最开始执行";
+        for (int i = 0; i < titles.length; i++) {
+            items[i + 1] = titles[i];
         }
-        setText(tvCurNote, (note == null || note.isEmpty()) ? "" : note);
+        final int cur = s.getStartStep();
+        final int[] choice = new int[]{cur <= 0 ? 0 : cur};
 
-        // 第 4 行：下一步 + 预计耗时
-        String nx = s.pNextName;
-        String nxTxt = (nx == null || nx.isEmpty()) ? "" : "下 " + nx;
-        if (s.pNextMs > 0) {
-            nxTxt = nxTxt + " · 约" + fmt(s.pNextMs / 1000.0) + "s";
-        }
-        setText(tvNextStep, nxTxt);
-
-        if (!expanded && ball != null) {
-            ball.setText("脚本 " + shortStep());
-        }
+        android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(ctx)
+                .setTitle("长按：选择从哪个任务开始")
+                .setSingleChoiceItems(items, choice[0], new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        choice[0] = which;
+                        if (which == 0) {
+                            s.setStartStep(1);
+                        } else {
+                            s.setStartStep(which);
+                        }
+                        d.dismiss();
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .create();
+        dlg.show();
     }
 
-    private void setText(TextView tv, String t) {
-        if (tv != null && t != null) {
-            tv.setText(t);
-        }
+    // ==================== 单击：调整日志浮窗 ====================
+
+    public void openSettings() {
+        final FloatConfig c = FloatConfig.load(ctx);
+
+        LinearLayout rootBox = new LinearLayout(ctx);
+        rootBox.setOrientation(LinearLayout.VERTICAL);
+        int pad = dpf(14);
+        rootBox.setPadding(pad, pad, pad, pad);
+
+        TextView tip = new TextView(ctx);
+        tip.setText("日志内容（以下各时间小于0.5秒均不显示）");
+        tip.setTextSize(12f);
+        tip.setTextColor(0xFF8A9099);
+        rootBox.addView(tip);
+
+        final TextView preview = new TextView(ctx);
+        preview.setTextSize(11f);
+        preview.setTextColor(0xFF333333);
+        preview.setPadding(dpf(8), dpf(6), dpf(8), dpf(6));
+        GradientDrawable pbg = new GradientDrawable();
+        pbg.setColor(0xFFF0F1F3);
+        pbg.setCornerRadius(dpf(6));
+        preview.setBackgroundDrawable(pbg);
+
+        final Runnable updatePreview = new Runnable() {
+            @Override
+            public void run() {
+                preview.setText(sample(c));
+            }
+        };
+
+        LinearLayout cbBox = new LinearLayout(ctx);
+        cbBox.setOrientation(LinearLayout.VERTICAL);
+        cbBox.addView(makeCb("循环次数", c.showLoop, new BoolSet() {
+            @Override
+            public void set(boolean v) {
+                c.showLoop = v;
+            }
+        }, c, updatePreview));
+        cbBox.addView(makeCb("循环的间隔时间", c.showLoopGap, new BoolSet() {
+            @Override
+            public void set(boolean v) {
+                c.showLoopGap = v;
+            }
+        }, c, updatePreview));
+        cbBox.addView(makeCb("当前步骤", c.showCurStep, new BoolSet() {
+            @Override
+            public void set(boolean v) {
+                c.showCurStep = v;
+            }
+        }, c, updatePreview));
+        cbBox.addView(makeCb("当前步骤的备注", c.showCurNote, new BoolSet() {
+            @Override
+            public void set(boolean v) {
+                c.showCurNote = v;
+            }
+        }, c, updatePreview));
+        cbBox.addView(makeCb("当前步骤的等待时间", c.showCurWait, new BoolSet() {
+            @Override
+            public void set(boolean v) {
+                c.showCurWait = v;
+            }
+        }, c, updatePreview));
+        cbBox.addView(makeCb("当前步骤内的执行次数和间隔时间", c.showCurTimes, new BoolSet() {
+            @Override
+            public void set(boolean v) {
+                c.showCurTimes = v;
+            }
+        }, c, updatePreview));
+        cbBox.addView(makeCb("下个步骤", c.showNextStep, new BoolSet() {
+            @Override
+            public void set(boolean v) {
+                c.showNextStep = v;
+            }
+        }, c, updatePreview));
+        cbBox.addView(makeCb("下个步骤的备注", c.showNextNote, new BoolSet() {
+            @Override
+            public void set(boolean v) {
+                c.showNextNote = v;
+            }
+        }, c, updatePreview));
+        rootBox.addView(cbBox);
+
+        rootBox.addView(sliderRow("字体大小", 8, 20, c.fontSize, new IntSet() {
+            @Override
+            public void set(int v) {
+                c.fontSize = v;
+            }
+        }, c, updatePreview));
+        rootBox.addView(sliderRow("边框大小", 0, 16, c.borderSize, new IntSet() {
+            @Override
+            public void set(int v) {
+                c.borderSize = v;
+            }
+        }, c, updatePreview));
+        rootBox.addView(sliderRow("浮窗透明度", 0, 20, c.alpha, new IntSet() {
+            @Override
+            public void set(int v) {
+                c.alpha = v;
+            }
+        }, c, updatePreview));
+
+        TextView pv = new TextView(ctx);
+        pv.setText("日志预览效果");
+        pv.setTextSize(12f);
+        pv.setTextColor(0xFF8A9099);
+        pv.setPadding(0, dpf(10), 0, dpf(4));
+        rootBox.addView(pv);
+        rootBox.addView(preview, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        updatePreview.run();
+
+        android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(ctx)
+                .setTitle("调整日志浮窗")
+                .setView(rootBox)
+                .setPositiveButton("隐藏日志并关闭", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int w) {
+                        c.save(ctx);
+                        cfg = c;
+                        hide();
+                    }
+                })
+                .setNegativeButton("关闭", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int w) {
+                        c.save(ctx);
+                        cfg = c;
+                        refresh();
+                    }
+                })
+                .create();
+        dlg.show();
     }
 
-    /** 兼容老调用点 */
-    public void refreshStatus() {
-        refresh();
+    private interface BoolSet {
+        void set(boolean v);
     }
 
-    private void toast(String msg) {
-        try {
-            android.widget.Toast.makeText(ctx, msg, android.widget.Toast.LENGTH_SHORT).show();
-        } catch (Throwable ignored) {
+    private interface IntSet {
+        void set(int v);
+    }
+
+    private View makeCb(String label, boolean checked, final BoolSet setter, final FloatConfig c, final Runnable onChanged) {
+        CheckBox cb = new CheckBox(ctx);
+        cb.setText(label);
+        cb.setTextSize(14f);
+        cb.setChecked(checked);
+        cb.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton b, boolean v) {
+                setter.set(v);
+                c.save(ctx);
+                cfg = c;
+                onChanged.run();
+                refresh();
+            }
+        });
+        return cb;
+    }
+
+    /** 一行滑条：名称+当前值，下方 SeekBar */
+    private View sliderRow(String label, final int min, final int max, int cur, final IntSet setter,
+                           final FloatConfig c, final Runnable onChanged) {
+        LinearLayout box = new LinearLayout(ctx);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(0, dpf(10), 0, 0);
+
+        final TextView tv = new TextView(ctx);
+        tv.setText(label + "：" + cur);
+        tv.setTextSize(13f);
+        tv.setTextColor(0xFF5A6472);
+        box.addView(tv);
+
+        SeekBar sb = new SeekBar(ctx);
+        sb.setMax(max - min);
+        sb.setProgress(Math.max(0, Math.min(max - min, cur - min)));
+        sb.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar s, int p, boolean fromUser) {
+                int v = min + p;
+                tv.setText(label + "：" + v);
+                setter.set(v);
+                c.save(ctx);
+                cfg = c;
+                onChanged.run();
+                if (root != null) {
+                    applyLook(root);
+                }
+                refresh();
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar s) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar s) {
+            }
+        });
+        box.addView(sb);
+        return box;
+    }
+
+    /** 预览文本：按当前勾选拼一组示例 */
+    private String sample(FloatConfig c) {
+        StringBuilder out = new StringBuilder();
+        String nl = String.valueOf((char) 10);
+        if (c.showLoop) {
+            out.append("循环 1/3").append(nl);
         }
+        if (c.showLoopGap) {
+            out.append("轮间隔 2s").append(nl);
+        }
+        StringBuilder cur = new StringBuilder();
+        if (c.showCurStep) {
+            cur.append("01:备注");
+        }
+        if (c.showCurNote) {
+            if (cur.length() > 0) {
+                cur.append(':');
+            }
+            cur.append("备注");
+        }
+        if (c.showCurWait) {
+            cur.append("(6s)");
+        }
+        if (c.showCurTimes) {
+            cur.append(" x3/2s");
+        }
+        if (cur.length() > 0) {
+            out.append("当前:").append(cur).append(nl);
+        }
+        StringBuilder next = new StringBuilder();
+        if (c.showNextStep) {
+            next.append("滑动02");
+        }
+        if (c.showNextNote) {
+            if (next.length() > 0) {
+                next.append('/');
+            }
+            next.append("备注");
+        }
+        if (next.length() > 0) {
+            out.append("下步:").append(next);
+        }
+        return out.toString().trim();
     }
 }
