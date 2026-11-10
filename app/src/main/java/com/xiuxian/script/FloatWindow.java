@@ -13,7 +13,9 @@ import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.CompoundButton;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
 
@@ -26,6 +28,13 @@ import android.widget.TextView;
  * 3. 修正上下拖动方向反转（底部对齐时 y 轴与手指方向相反，需取反）；
  * 4. 自带「启动 / 暂停·继续 / 停止」三个按钮；
  * 5. 单击打开「调整日志浮窗」设置，长按可选择从哪个任务开始。
+ *
+ * 重要修正（构建48）：
+ * 旧版用 AlertDialog + getApplicationContext() 弹面板，Android 8 以上会抛
+ * BadTokenException（token null is not for an application）直接崩掉整个进程，
+ * 表现出来就是「一点悬浮窗，脚本就停了」。
+ * 现在面板与长按菜单全部改成自建的悬浮层窗口（TYPE_APPLICATION_OVERLAY），
+ * 不再依赖 Dialog 的 token，点多少次都不会崩。
  */
 public class FloatWindow {
 
@@ -50,6 +59,10 @@ public class FloatWindow {
 
     private WindowManager.LayoutParams lp;
     private FloatConfig cfg;
+
+    /** 自建的浮动面板（设置 / 长按菜单），不使用 Dialog，避免崩溃 */
+    private View panelView;
+    private WindowManager.LayoutParams panelLp;
 
     /** 拖动 / 点击 / 长按 判定 */
     private float downRawX;
@@ -133,6 +146,7 @@ public class FloatWindow {
     }
 
     public void hide() {
+        closePanel();
         try {
             ui.removeCallbacks(ticker);
             if (root != null && showing) {
@@ -168,7 +182,7 @@ public class FloatWindow {
         clampAndApply();
     }
 
-    // ==================== 构建界面 ====================
+    // ==================== 构建浮窗 ====================
 
     private void build() {
         LinearLayout box = new LinearLayout(ctx);
@@ -189,10 +203,14 @@ public class FloatWindow {
         btnFold.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                if (collapsed) {
-                    expand();
-                } else {
-                    collapse();
+                try {
+                    if (collapsed) {
+                        expand();
+                    } else {
+                        collapse();
+                    }
+                } catch (Throwable t) {
+                    Logger.e("收起失败: " + t);
                 }
             }
         });
@@ -202,7 +220,11 @@ public class FloatWindow {
         btnClose.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                hide();
+                try {
+                    hide();
+                } catch (Throwable t) {
+                    Logger.e("关闭失败: " + t);
+                }
             }
         });
         titleBar.addView(btnClose);
@@ -218,23 +240,11 @@ public class FloatWindow {
         btnStart.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                AutoService s = AutoService.get();
-                if (s == null) {
-                    Logger.e("无障碍服务未连接，请先在主界面开启");
-                    expand();
-                    return;
+                try {
+                    onStartClick();
+                } catch (Throwable t) {
+                    Logger.e("启动失败: " + t);
                 }
-                if (s.isRunning()) {
-                    Logger.w("脚本已在运行中");
-                    return;
-                }
-                int gi = Games.selectedIndex(ctx);
-                if (!Games.isInstalled(ctx, gi)) {
-                    Logger.e("选中的游戏未安装: " + Games.pkg(gi));
-                    return;
-                }
-                s.startScript();
-                refresh();
             }
         });
         ctrlBar.addView(btnStart, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
@@ -243,17 +253,21 @@ public class FloatWindow {
         btnPause.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                AutoService s = AutoService.get();
-                if (s == null) {
-                    Logger.e("无障碍服务未连接");
-                    return;
+                try {
+                    AutoService s = AutoService.get();
+                    if (s == null) {
+                        Logger.e("无障碍服务未连接");
+                        return;
+                    }
+                    if (s.isPaused()) {
+                        s.resumeScript();
+                    } else {
+                        s.pauseScript();
+                    }
+                    refresh();
+                } catch (Throwable t) {
+                    Logger.e("暂停/继续失败: " + t);
                 }
-                if (s.isPaused()) {
-                    s.resumeScript();
-                } else {
-                    s.pauseScript();
-                }
-                refresh();
             }
         });
         ctrlBar.addView(btnPause, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
@@ -262,13 +276,17 @@ public class FloatWindow {
         btnStop.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                AutoService s = AutoService.get();
-                if (s == null) {
-                    Logger.e("无障碍服务未连接");
-                    return;
+                try {
+                    AutoService s = AutoService.get();
+                    if (s == null) {
+                        Logger.e("无障碍服务未连接");
+                        return;
+                    }
+                    s.stopScript();
+                    refresh();
+                } catch (Throwable t) {
+                    Logger.e("停止失败: " + t);
                 }
-                s.stopScript();
-                refresh();
             }
         });
         ctrlBar.addView(btnStop, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
@@ -293,45 +311,48 @@ public class FloatWindow {
         View.OnTouchListener touch = new View.OnTouchListener() {
             @Override
             public boolean onTouch(View v, MotionEvent e) {
-                switch (e.getActionMasked()) {
-                    case MotionEvent.ACTION_DOWN:
-                        downRawX = e.getRawX();
-                        downRawY = e.getRawY();
-                        startX = lp.x;
-                        startY = lp.y;
-                        downTime = System.currentTimeMillis();
-                        dragging = false;
-                        return true;
-                    case MotionEvent.ACTION_MOVE:
-                        float dx = e.getRawX() - downRawX;
-                        float dy = e.getRawY() - downRawY;
-                        if (Math.abs(dx) > dpf(3) || Math.abs(dy) > dpf(3)) {
-                            dragging = true;
-                        }
-                        if (dragging && lp != null) {
-                            // 关键修正：底部对齐时 y 轴与手指方向相反，必须取反
-                            lp.x = startX + (int) dx;
-                            lp.y = startY - (int) dy;
-                            clampAndApply();
-                        }
-                        return true;
-                    case MotionEvent.ACTION_UP:
-                    case MotionEvent.ACTION_CANCEL:
-                        long held = System.currentTimeMillis() - downTime;
-                        boolean moved = dragging;
-                        dragging = false;
-                        if (!moved) {
-                            if (held >= LONG_PRESS_MS) {
-                                // 长按：选择从哪个任务开始
-                                showStartStepChooser();
-                            } else {
-                                // 单击：打开调整日志浮窗
-                                openSettings();
+                try {
+                    switch (e.getActionMasked()) {
+                        case MotionEvent.ACTION_DOWN:
+                            downRawX = e.getRawX();
+                            downRawY = e.getRawY();
+                            startX = lp.x;
+                            startY = lp.y;
+                            downTime = System.currentTimeMillis();
+                            dragging = false;
+                            return true;
+                        case MotionEvent.ACTION_MOVE:
+                            float dx = e.getRawX() - downRawX;
+                            float dy = e.getRawY() - downRawY;
+                            if (Math.abs(dx) > dpf(3) || Math.abs(dy) > dpf(3)) {
+                                dragging = true;
                             }
-                        }
-                        return true;
-                    default:
-                        return false;
+                            if (dragging && lp != null) {
+                                // 关键修正：底部对齐时 y 轴与手指方向相反，必须取反
+                                lp.x = startX + (int) dx;
+                                lp.y = startY - (int) dy;
+                                clampAndApply();
+                            }
+                            return true;
+                        case MotionEvent.ACTION_UP:
+                        case MotionEvent.ACTION_CANCEL:
+                            long held = System.currentTimeMillis() - downTime;
+                            boolean moved = dragging;
+                            dragging = false;
+                            if (!moved) {
+                                if (held >= LONG_PRESS_MS) {
+                                    showStartStepChooser();
+                                } else {
+                                    openSettings();
+                                }
+                            }
+                            return true;
+                        default:
+                            return false;
+                    }
+                } catch (Throwable t) {
+                    Logger.e("浮窗触摸处理异常: " + t);
+                    return false;
                 }
             }
         };
@@ -359,6 +380,27 @@ public class FloatWindow {
                 refresh();
             }
         });
+    }
+
+    /** 浮窗里的「启动」：先确认游戏已装，再拉起脚本 */
+    private void onStartClick() {
+        AutoService s = AutoService.get();
+        if (s == null) {
+            Logger.e("无障碍服务未连接，请先在主界面开启无障碍");
+            expand();
+            return;
+        }
+        if (s.isRunning()) {
+            Logger.w("脚本已在运行中");
+            return;
+        }
+        int gi = Games.selectedIndex(ctx);
+        if (!Games.isInstalled(ctx, gi)) {
+            Logger.e("选中的游戏未安装: " + Games.pkg(gi));
+            return;
+        }
+        s.startScript();
+        refresh();
     }
 
     private Button smallBtn(String text) {
@@ -544,71 +586,91 @@ public class FloatWindow {
         return String.format(java.util.Locale.US, "%.1f", sec);
     }
 
-    // ==================== 长按：选择从哪个任务开始 ====================
+    // ==================== 自建浮动面板（不用 Dialog，杜绝崩溃） ====================
 
-    private void showStartStepChooser() {
-        final AutoService s = AutoService.get();
-        if (s == null) {
-            Logger.e("无障碍服务未连接");
-            return;
+    private void closePanel() {
+        try {
+            if (panelView != null) {
+                wm.removeView(panelView);
+            }
+        } catch (Throwable ignored) {
         }
-        final String[] titles = s.stepTitles();
-        if (titles.length == 0) {
-            Logger.e("当前流程没有可选的步骤");
-            return;
-        }
-        // 「默认从最初开始」放第一项
-        final String[] items = new String[titles.length + 1];
-        items[0] = "默认：从最开始执行";
-        for (int i = 0; i < titles.length; i++) {
-            items[i + 1] = titles[i];
-        }
-        final int cur = s.getStartStep();
-        final int[] choice = new int[]{cur <= 0 ? 0 : cur};
+        panelView = null;
+        panelLp = null;
+    }
 
-        android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(ctx)
-                .setTitle("长按：选择从哪个任务开始")
-                .setSingleChoiceItems(items, choice[0], new android.content.DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(android.content.DialogInterface d, int which) {
-                        choice[0] = which;
-                        if (which == 0) {
-                            s.setStartStep(1);
-                        } else {
-                            s.setStartStep(which);
-                        }
-                        d.dismiss();
-                    }
-                })
-                .setNegativeButton("取消", null)
-                .create();
-        dlg.show();
+    /**
+     * 把内容包装成一层全屏半透明遮罩 + 居中的卡片，加进 WindowManager。
+     * 用 TYPE_APPLICATION_OVERLAY，所以不需要 Activity 的 token。
+     */
+    private void showPanel(View content, int widthDp) {
+        closePanel();
+        FrameLayout wrap = new FrameLayout(ctx);
+        wrap.setBackgroundColor(0xB3000000);
+        FrameLayout.LayoutParams clp = new FrameLayout.LayoutParams(
+                dpf(widthDp), FrameLayout.LayoutParams.WRAP_CONTENT);
+        clp.gravity = Gravity.CENTER;
+        wrap.addView(content, clp);
+
+        GradientDrawable card = new GradientDrawable();
+        card.setColor(0xFFFFFFFF);
+        card.setCornerRadius(dpf(10));
+        content.setBackgroundDrawable(card);
+        content.setPadding(dpf(12), dpf(12), dpf(12), dpf(10));
+
+        panelLp = new WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                android.graphics.PixelFormat.TRANSLUCENT);
+        panelLp.gravity = Gravity.CENTER;
+
+        wm.addView(wrap, panelLp);
+        panelView = wrap;
     }
 
     // ==================== 单击：调整日志浮窗 ====================
 
     public void openSettings() {
+        try {
+            showSettingsPanel();
+        } catch (Throwable t) {
+            Logger.e("打开设置面板失败: " + t);
+            closePanel();
+        }
+    }
+
+    private void showSettingsPanel() {
         final FloatConfig c = FloatConfig.load(ctx);
 
-        LinearLayout rootBox = new LinearLayout(ctx);
-        rootBox.setOrientation(LinearLayout.VERTICAL);
-        int pad = dpf(14);
-        rootBox.setPadding(pad, pad, pad, pad);
+        LinearLayout box = new LinearLayout(ctx);
+        box.setOrientation(LinearLayout.VERTICAL);
+
+        TextView title = new TextView(ctx);
+        title.setText("调整日志浮窗");
+        title.setTextSize(19f);
+        title.setTextColor(0xFF1F2328);
+        title.setPadding(0, 0, 0, dpf(8));
+        box.addView(title);
 
         TextView tip = new TextView(ctx);
         tip.setText("日志内容（以下各时间小于0.5秒均不显示）");
         tip.setTextSize(12f);
         tip.setTextColor(0xFF8A9099);
-        rootBox.addView(tip);
+        tip.setPadding(0, 0, 0, dpf(4));
+        box.addView(tip);
 
         final TextView preview = new TextView(ctx);
         preview.setTextSize(11f);
-        preview.setTextColor(0xFF333333);
+        preview.setTextColor(0xFF2B2B2B);
         preview.setPadding(dpf(8), dpf(6), dpf(8), dpf(6));
         GradientDrawable pbg = new GradientDrawable();
-        pbg.setColor(0xFFF0F1F3);
-        pbg.setCornerRadius(dpf(6));
+        pbg.setColor(0xFF404040);
+        pbg.setCornerRadius(dpf(4));
         preview.setBackgroundDrawable(pbg);
+        preview.setTextColor(0xFFFFFFFF);
 
         final Runnable updatePreview = new Runnable() {
             @Override
@@ -617,71 +679,68 @@ public class FloatWindow {
             }
         };
 
-        LinearLayout cbBox = new LinearLayout(ctx);
-        cbBox.setOrientation(LinearLayout.VERTICAL);
-        cbBox.addView(makeCb("循环次数", c.showLoop, new BoolSet() {
+        box.addView(makeCb("循环次数", c.showLoop, new BoolSet() {
             @Override
             public void set(boolean v) {
                 c.showLoop = v;
             }
         }, c, updatePreview));
-        cbBox.addView(makeCb("循环的间隔时间", c.showLoopGap, new BoolSet() {
+        box.addView(makeCb("循环的间隔时间", c.showLoopGap, new BoolSet() {
             @Override
             public void set(boolean v) {
                 c.showLoopGap = v;
             }
         }, c, updatePreview));
-        cbBox.addView(makeCb("当前步骤", c.showCurStep, new BoolSet() {
+        box.addView(makeCb("当前步骤", c.showCurStep, new BoolSet() {
             @Override
             public void set(boolean v) {
                 c.showCurStep = v;
             }
         }, c, updatePreview));
-        cbBox.addView(makeCb("当前步骤的备注", c.showCurNote, new BoolSet() {
+        box.addView(makeCb("当前步骤的备注", c.showCurNote, new BoolSet() {
             @Override
             public void set(boolean v) {
                 c.showCurNote = v;
             }
         }, c, updatePreview));
-        cbBox.addView(makeCb("当前步骤的等待时间", c.showCurWait, new BoolSet() {
+        box.addView(makeCb("当前步骤的等待时间", c.showCurWait, new BoolSet() {
             @Override
             public void set(boolean v) {
                 c.showCurWait = v;
             }
         }, c, updatePreview));
-        cbBox.addView(makeCb("当前步骤内的执行次数和间隔时间", c.showCurTimes, new BoolSet() {
+        box.addView(makeCb("当前步骤内的执行次数和间隔时间", c.showCurTimes, new BoolSet() {
             @Override
             public void set(boolean v) {
                 c.showCurTimes = v;
             }
         }, c, updatePreview));
-        cbBox.addView(makeCb("下个步骤", c.showNextStep, new BoolSet() {
+        box.addView(makeCb("下个步骤", c.showNextStep, new BoolSet() {
             @Override
             public void set(boolean v) {
                 c.showNextStep = v;
             }
         }, c, updatePreview));
-        cbBox.addView(makeCb("下个步骤的备注", c.showNextNote, new BoolSet() {
+        box.addView(makeCb("下个步骤的备注", c.showNextNote, new BoolSet() {
             @Override
             public void set(boolean v) {
                 c.showNextNote = v;
             }
         }, c, updatePreview));
-        rootBox.addView(cbBox);
 
-        rootBox.addView(sliderRow("字体大小", 8, 20, c.fontSize, new IntSet() {
+        box.addView(sliderRow("字体大小", 8, 20, c.fontSize, new IntSet() {
             @Override
             public void set(int v) {
                 c.fontSize = v;
             }
         }, c, updatePreview));
-        rootBox.addView(sliderRow("边框大小", 0, 16, c.borderSize, new IntSet() {
+        box.addView(sliderRow("边框大小", 0, 16, c.borderSize, new IntSet() {
             @Override
             public void set(int v) {
                 c.borderSize = v;
             }
         }, c, updatePreview));
-        rootBox.addView(sliderRow("浮窗透明度", 0, 20, c.alpha, new IntSet() {
+        box.addView(sliderRow("浮窗透明度", 0, 20, c.alpha, new IntSet() {
             @Override
             public void set(int v) {
                 c.alpha = v;
@@ -692,34 +751,62 @@ public class FloatWindow {
         pv.setText("日志预览效果");
         pv.setTextSize(12f);
         pv.setTextColor(0xFF8A9099);
-        pv.setPadding(0, dpf(10), 0, dpf(4));
-        rootBox.addView(pv);
-        rootBox.addView(preview, new LinearLayout.LayoutParams(
+        pv.setPadding(0, dpf(8), 0, dpf(4));
+        box.addView(pv);
+        box.addView(preview, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        // 底部两个按钮
+        LinearLayout btns = new LinearLayout(ctx);
+        btns.setOrientation(LinearLayout.HORIZONTAL);
+        btns.setPadding(0, dpf(12), 0, 0);
+
+        Button bHide = panelBtn("隐藏日志并关闭");
+        bHide.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                try {
+                    c.save(ctx);
+                    cfg = c;
+                    closePanel();
+                    hide();
+                } catch (Throwable t) {
+                    Logger.e("隐藏失败: " + t);
+                }
+            }
+        });
+        btns.addView(bHide, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        Button bClose = panelBtn("关闭");
+        bClose.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                try {
+                    c.save(ctx);
+                    cfg = c;
+                    closePanel();
+                    refresh();
+                } catch (Throwable t) {
+                    Logger.e("关闭面板失败: " + t);
+                }
+            }
+        });
+        btns.addView(bClose, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        box.addView(btns);
 
         updatePreview.run();
 
-        android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(ctx)
-                .setTitle("调整日志浮窗")
-                .setView(rootBox)
-                .setPositiveButton("隐藏日志并关闭", new android.content.DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(android.content.DialogInterface d, int w) {
-                        c.save(ctx);
-                        cfg = c;
-                        hide();
-                    }
-                })
-                .setNegativeButton("关闭", new android.content.DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(android.content.DialogInterface d, int w) {
-                        c.save(ctx);
-                        cfg = c;
-                        refresh();
-                    }
-                })
-                .create();
-        dlg.show();
+        ScrollView sv = new ScrollView(ctx);
+        sv.addView(box);
+        showPanel(sv, 300);
+    }
+
+    private Button panelBtn(String text) {
+        Button b = new Button(ctx);
+        b.setText(text);
+        b.setAllCaps(false);
+        b.setTextSize(13f);
+        return b;
     }
 
     private interface BoolSet {
@@ -734,15 +821,20 @@ public class FloatWindow {
         CheckBox cb = new CheckBox(ctx);
         cb.setText(label);
         cb.setTextSize(14f);
+        cb.setTextColor(0xFF1F2328);
         cb.setChecked(checked);
         cb.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
             @Override
             public void onCheckedChanged(CompoundButton b, boolean v) {
-                setter.set(v);
-                c.save(ctx);
-                cfg = c;
-                onChanged.run();
-                refresh();
+                try {
+                    setter.set(v);
+                    c.save(ctx);
+                    cfg = c;
+                    onChanged.run();
+                    refresh();
+                } catch (Throwable t) {
+                    Logger.e("保存显示项失败: " + t);
+                }
             }
         });
         return cb;
@@ -753,7 +845,7 @@ public class FloatWindow {
                            final FloatConfig c, final Runnable onChanged) {
         LinearLayout box = new LinearLayout(ctx);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(0, dpf(10), 0, 0);
+        box.setPadding(0, dpf(8), 0, 0);
 
         final TextView tv = new TextView(ctx);
         tv.setText(label + "：" + cur);
@@ -767,16 +859,20 @@ public class FloatWindow {
         sb.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar s, int p, boolean fromUser) {
-                int v = min + p;
-                tv.setText(label + "：" + v);
-                setter.set(v);
-                c.save(ctx);
-                cfg = c;
-                onChanged.run();
-                if (root != null) {
-                    applyLook(root);
+                try {
+                    int v = min + p;
+                    tv.setText(label + "：" + v);
+                    setter.set(v);
+                    c.save(ctx);
+                    cfg = c;
+                    onChanged.run();
+                    if (root != null) {
+                        applyLook(root);
+                    }
+                    refresh();
+                } catch (Throwable t) {
+                    Logger.e("调整滑条失败: " + t);
                 }
-                refresh();
             }
 
             @Override
@@ -803,7 +899,7 @@ public class FloatWindow {
         }
         StringBuilder cur = new StringBuilder();
         if (c.showCurStep) {
-            cur.append("01:备注");
+            cur.append("01");
         }
         if (c.showCurNote) {
             if (cur.length() > 0) {
@@ -834,5 +930,117 @@ public class FloatWindow {
             out.append("下步:").append(next);
         }
         return out.toString().trim();
+    }
+
+    // ==================== 长按：选择从哪个任务开始 ====================
+
+    private void showStartStepChooser() {
+        try {
+            showChooserPanel();
+        } catch (Throwable t) {
+            Logger.e("打开起始任务菜单失败: " + t);
+            closePanel();
+        }
+    }
+
+    private void showChooserPanel() {
+        final AutoService s = AutoService.get();
+        if (s == null) {
+            Logger.e("无障碍服务未连接");
+            return;
+        }
+        final String[] titles = s.stepTitles();
+        if (titles.length == 0) {
+            Logger.e("当前流程没有可选的步骤");
+            return;
+        }
+
+        LinearLayout box = new LinearLayout(ctx);
+        box.setOrientation(LinearLayout.VERTICAL);
+
+        TextView title = new TextView(ctx);
+        title.setText("选择从哪个任务开始");
+        title.setTextSize(18f);
+        title.setTextColor(0xFF1F2328);
+        title.setPadding(0, 0, 0, dpf(6));
+        box.addView(title);
+
+        TextView tip = new TextView(ctx);
+        tip.setText("长按浮窗进入此处；默认从最开始执行，下次启动生效");
+        tip.setTextSize(12f);
+        tip.setTextColor(0xFF8A9099);
+        tip.setPadding(0, 0, 0, dpf(6));
+        box.addView(tip);
+
+        final int cur = Math.max(0, s.getStartStep());
+
+        // 第一项：默认从最初开始
+        box.addView(choiceRow("默认：从最开始执行", cur == 0, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                try {
+                    s.setStartStep(0);
+                    closePanel();
+                } catch (Throwable t) {
+                    Logger.e("设置起始任务失败: " + t);
+                }
+            }
+        }));
+
+        for (int i = 0; i < titles.length; i++) {
+            final int oneBased = i + 1;
+            box.addView(choiceRow(titles[i], cur == oneBased, new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    try {
+                        s.setStartStep(oneBased);
+                        closePanel();
+                    } catch (Throwable t) {
+                        Logger.e("设置起始任务失败: " + t);
+                    }
+                }
+            }));
+        }
+
+        Button cancel = panelBtn("取消");
+        cancel.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                closePanel();
+            }
+        });
+        box.addView(cancel, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        ScrollView sv = new ScrollView(ctx);
+        sv.addView(box);
+        showPanel(sv, 300);
+    }
+
+    /** 一行可点的选项：前面用小圆点表示是否选中 */
+    private View choiceRow(String text, boolean selected, View.OnClickListener click) {
+        LinearLayout row = new LinearLayout(ctx);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dpf(6), dpf(9), dpf(6), dpf(9));
+        row.setOnClickListener(click);
+
+        TextView dot = new TextView(ctx);
+        dot.setText(selected ? "●" : "○");
+        dot.setTextSize(14f);
+        dot.setTextColor(selected ? 0xFFE91E63 : 0xFFB0B6BE);
+        dot.setPadding(0, 0, dpf(8), 0);
+        row.addView(dot);
+
+        TextView tv = new TextView(ctx);
+        tv.setText(text);
+        tv.setTextSize(14f);
+        tv.setTextColor(selected ? 0xFFE91E63 : 0xFF1F2328);
+        row.addView(tv, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        GradientDrawable line = new GradientDrawable();
+        line.setColor(0xFFF2F3F5);
+        row.setBackgroundDrawable(line);
+        return row;
     }
 }
