@@ -29,6 +29,8 @@ import java.util.concurrent.TimeUnit;
 public class AutoService extends AccessibilityService {
 
     public static final String CONFIG_FILE = "config.json";
+    /** 配置结构版本：流程步骤改版时 +1，旧配置会自动升级 */
+    public static final int CFG_VERSION = 2;
 
     private static volatile AutoService instance;
 
@@ -87,41 +89,78 @@ public class AutoService extends AccessibilityService {
     public static JSONObject defaultConfig() {
         JSONObject o = new JSONObject();
         try {
+            o.put("version", CFG_VERSION);
             o.put("appName", "天途");
             o.put("packageName", "");
             o.put("loop", 1);
             o.put("perAccount", true);
+            // ---- 9 步流程：每一步都能在悬浮窗上看到，卡在哪一步一眼可见 ----
             JSONArray steps = new JSONArray();
-            steps.put(new JSONObject().put("action", "launch"));
-            steps.put(new JSONObject().put("action", "wait").put("ms", 9000));
-            JSONObject login = new JSONObject();
-            login.put("action", "login");
-            login.put("autoLocate", true);
-            login.put("byText", true);
-            login.put("userX", 0.5);
-            login.put("userY", 0.349);
-            login.put("passX", 0.5);
-            login.put("passY", 0.451);
-            login.put("btnX", 0.5);
-            login.put("btnY", 0.554);
-            login.put("retry", 2);
-            login.put("waitAfter", 6000);
-            steps.put(login);
 
-            // 选服页 -> 点「进入游戏」
-            JSONObject enter = new JSONObject();
-            enter.put("action", "entergame");
-            enter.put("retry", 4);
-            enter.put("poll", 700);
-            enter.put("waitAfter", 1500);
-            steps.put(enter);
+            // 1. 打开游戏（启动后原地等界面加载）
+            steps.put(new JSONObject()
+                    .put("action", "launch")
+                    .put("waitAfter", 9000)
+                    .put("note", "按包名启动游戏，等登录界面出现"));
 
-            // 进游戏后的弹窗：奇货居 / 离线收益 / 其它，逐个关到主界面为止
-            JSONObject cls = new JSONObject();
-            cls.put("action", "closepopups");
-            cls.put("maxMs", 30000);
-            cls.put("poll", 700);
-            steps.put(cls);
+            // 2~4. 登录拆成三段：输入账号 / 输入密码 / 点登录
+            steps.put(new JSONObject()
+                    .put("action", "inputuser")
+                    .put("autoLocate", true)
+                    .put("byText", true)
+                    .put("userX", 0.5)
+                    .put("userY", 0.349)
+                    .put("userX2", 0.5)
+                    .put("note", "识别账号框并填入账号"));
+            steps.put(new JSONObject()
+                    .put("action", "inputpass")
+                    .put("autoLocate", true)
+                    .put("byText", true)
+                    .put("passX", 0.5)
+                    .put("passY", 0.451)
+                    .put("note", "识别密码框并填入密码"));
+            steps.put(new JSONObject()
+                    .put("action", "loginbtn")
+                    .put("autoLocate", true)
+                    .put("byText", true)
+                    .put("btnX", 0.5)
+                    .put("btnY", 0.554)
+                    .put("note", "点登录按钮并确认已离开登录界面"));
+
+            // 5. 确定（有的渠道登录后会弹确认框，没有就跳过）
+            steps.put(new JSONObject()
+                    .put("action", "confirm")
+                    .put("ms", 2500)
+                    .put("poll", 400)
+                    .put("note", "登录后如弹出「确定」就点掉，没有则跳过"));
+
+            // 6. 选服页 -> 进入游戏
+            steps.put(new JSONObject()
+                    .put("action", "entergame")
+                    .put("retry", 4)
+                    .put("poll", 700)
+                    .put("waitAfter", 1500)
+                    .put("note", "在选服页点「进入游戏」"));
+
+            // 7~9. 三个常见弹窗逐个关
+            steps.put(new JSONObject()
+                    .put("action", "closepopup")
+                    .put("label", "奇货居弹窗")
+                    .put("ms", 12000)
+                    .put("poll", 600)
+                    .put("note", "点右上角白色 X 关掉奇货居弹窗"));
+            steps.put(new JSONObject()
+                    .put("action", "closepopup")
+                    .put("label", "离线收益弹窗")
+                    .put("ms", 12000)
+                    .put("poll", 600)
+                    .put("note", "点右上角白色 X 关掉离线收益弹窗"));
+            steps.put(new JSONObject()
+                    .put("action", "closepopup")
+                    .put("label", "域外凶兽弹窗")
+                    .put("ms", 12000)
+                    .put("poll", 600)
+                    .put("note", "点右上角白色 X 关掉域外凶兽弹窗"));
 
             o.put("steps", steps);
         } catch (Throwable ignored) {
@@ -369,6 +408,19 @@ public class AutoService extends AccessibilityService {
                 Logger.i("已生成默认配置: " + f.getAbsolutePath());
             }
             JSONObject o = new JSONObject(readText(f));
+            // 流程步骤改版：旧配置（5 步）自动升级成新版 9 步，用户不用手动改
+            if (o.optInt("version", 1) < CFG_VERSION) {
+                JSONObject d = defaultConfig();
+                d.put("loop", Math.max(1, o.optInt("loop", 1)));
+                d.put("perAccount", o.optBoolean("perAccount", true));
+                String oldPkg = o.optString("packageName", "");
+                if (oldPkg != null && oldPkg.length() > 0) {
+                    d.put("packageName", oldPkg);
+                }
+                writeText(f, d.toString(2));
+                Logger.i("配置已升级到 v" + CFG_VERSION + "（流程改为 9 步）");
+                return d;
+            }
             Logger.i("配置读取成功");
             return o;
         } catch (Throwable t) {
@@ -1476,6 +1528,19 @@ public class AutoService extends AccessibilityService {
         if ("findimg".equals(a) || "findimage".equals(a) || "findtext".equals(a)) {
             return 1500;
         }
+        if ("inputuser".equals(a) || "inputpass".equals(a)) {
+            // 定位 + 等键盘 + 填字 + 回读校验
+            return 3500;
+        }
+        if ("loginbtn".equals(a)) {
+            return 4500;
+        }
+        if ("confirm".equals(a)) {
+            return 1200;
+        }
+        if ("closepopup".equals(a)) {
+            return Math.max(1500, s.optInt("ms", 8000));
+        }
         if ("input".equals(a) || "settext".equals(a) || "tapinput".equals(a)) {
             return 800 + s.optInt("ms", 0);
         }
@@ -1539,6 +1604,11 @@ public class AutoService extends AccessibilityService {
             case "findimg":
             case "findimage": return "找图点击";
             case "findtext": return "找字点击";
+            case "inputuser": return "输入账号";
+            case "inputpass": return "输入密码";
+            case "loginbtn": return "登录";
+            case "confirm": return "确定";
+            case "closepopup": return "关闭弹窗";
             case "entergame": return "点击进入游戏";
             case "closepopups": return "关闭弹窗直到主界面";
             case "log": return "记录日志";
@@ -1556,6 +1626,11 @@ public class AutoService extends AccessibilityService {
             case "swipe": return "从 (" + s.optDouble("x1", 0.5) + "," + s.optDouble("y1", 0.8)
                     + ") 滑到 (" + s.optDouble("x2", 0.5) + "," + s.optDouble("y2", 0.2) + ")";
             case "login": return "识别账号框/密码框/登录按钮并提交";
+            case "inputuser": return "定位账号输入框并填入当前账号";
+            case "inputpass": return "定位密码输入框并填入当前密码";
+            case "loginbtn": return "点登录按钮，确认已离开登录界面";
+            case "confirm": return "有「确定」按钮就点，没有则跳过";
+            case "closepopup": return "关闭" + s.optString("label", "弹窗");
             case "findimg":
             case "findimage": return "在屏幕上找模板图并点击";
             case "findtext": return "在界面文字里找关键词并点击";
@@ -2229,11 +2304,26 @@ public class AutoService extends AccessibilityService {
             return true;
         }
         // 2) 右上角白色 X（奇货居 / 离线收益 / 其它弹窗共用这一种按钮）
+        //    老逻辑只取「最大白块」，弹窗插画里的灯笼、十字装饰常被当成按钮，
+        //    点下去毫无反应，于是卡在这一步。现在改成：按「像 X + 靠右上」排候选，
+        //    最多试 3 个，并且点完回看该位置的白 X 是否真的消失，没消失就换下一个。
         if (shot()) {
-            int[] p = closeButtonOnFrame();
-            if (p != null) {
-                Logger.i("识别到弹窗关闭按钮 (" + p[0] + "," + p[1] + ")");
-                return clickPx(p[0], p[1]);
+            java.util.List<int[]> cands = closeButtonCandidates();
+            int tried = 0;
+            for (int i = 0; i < cands.size() && running && tried < 3; i++) {
+                int[] p = cands.get(i);
+                tried++;
+                Logger.i("识别到弹窗关闭按钮候选 " + tried + " (" + p[0] + "," + p[1] + ")");
+                clickPx(p[0], p[1]);
+                sleep(Math.max(250, s.optInt("poll", 700) / 2));
+                if (whiteCrossGoneAt(p[0], p[1])) {
+                    Logger.i("关闭按钮点中，X 已消失 (" + p[0] + "," + p[1] + ")");
+                    return true;
+                }
+                Logger.w("该候选点点了没反应，换下一个候选");
+            }
+            if (tried > 0) {
+                Logger.w("候选点全试过，X 仍在，继续轮询");
             }
         }
         // 3) 配了模板图就再用模板兜一次
@@ -2250,6 +2340,161 @@ public class AutoService extends AccessibilityService {
             return clickPx(fx, fy);
         }
         return false;
+    }
+
+    // ============ 分步登录 / 确定 / 逐弹窗关闭（供 9 步流程使用） ============
+
+    /**
+     * 分步登录：phase=1 只填账号，2 只填密码，3 只点登录按钮。
+     * 拆开是为了让悬浮窗进度能显示「输入账号 → 输入密码 → 登录」，
+     * 每一步都有真实耗时，卡在哪一步一眼就能看出来。
+     */
+    private void doLoginPhase(JSONObject s, int phase) {
+        if (curUser == null) {
+            curUser = "";
+        }
+        if (curPass == null) {
+            curPass = "";
+        }
+        if (phase == 1 && curUser.length() == 0) {
+            Logger.w("当前没有账号，跳过输入账号");
+            return;
+        }
+        int[] ui = null;
+        if (s.optBoolean("autoLocate", true)) {
+            int[] waits = {0, 250, 350, 500, 700, 900, 1200};
+            for (int i = 0; i < waits.length && running; i++) {
+                if (waits[i] > 0) {
+                    sleep(waits[i]);
+                }
+                pPhase = (phase == 3 ? "定位登录按钮" : "定位登录界面")
+                        + "(第" + (i + 1) + "次探测)";
+                ui = locateLoginUi();
+                if (ui != null) {
+                    break;
+                }
+            }
+        }
+        if (!running) {
+            return;
+        }
+        java.util.List<UiNode> inputs = null;
+        if (s.optBoolean("byText", true)) {
+            inputs = editableNodes();
+            if (inputs.size() < 2) {
+                java.util.List<UiNode> alt = editableFromDump();
+                if (alt.size() > inputs.size()) {
+                    inputs = alt;
+                }
+            }
+        }
+        int userX = ui == null ? -1 : ui[0];
+        int userY = ui == null ? -1 : ui[1];
+        int passX = ui == null ? -1 : ui[2];
+        int passY = ui == null ? -1 : ui[3];
+        int btnX = ui == null ? -1 : ui[4];
+        int btnY = ui == null ? -1 : ui[5];
+        if (inputs != null && inputs.size() >= 2) {
+            UiNode a = inputs.get(0);
+            UiNode b = inputs.get(inputs.size() - 1);
+            userX = a.cx();
+            userY = a.cy();
+            passX = b.cx();
+            passY = b.cy();
+            Logger.i("控件定位输入框：账号(" + userX + "," + userY + ")"
+                    + "  密码(" + passX + "," + passY + ")");
+        }
+
+        if (phase == 1) {
+            boolean ok = false;
+            if (userY > 0) {
+                ok = clickPx(userX, userY);
+            }
+            if (!ok) {
+                Logger.i("改用比例坐标点账号框");
+                ok = clickRatio((float) s.optDouble("userX", 0.5),
+                        (float) s.optDouble("userY", 0.349));
+            }
+            pPhase = "填写账号";
+            waitKeyboard(s.optInt("tapDelay", 900));
+            Logger.i("账号填入: " + (typeInto(curUser, false) ? "成功" : "失败"));
+            return;
+        }
+        if (phase == 2) {
+            boolean ok = false;
+            if (passY > 0) {
+                ok = clickPx(passX, passY);
+            }
+            if (!ok) {
+                Logger.i("改用比例坐标点密码框");
+                ok = clickRatio((float) s.optDouble("passX", 0.5),
+                        (float) s.optDouble("passY", 0.451));
+            }
+            pPhase = "填写密码";
+            waitKeyboard(s.optInt("tapDelay", 900));
+            Logger.i("密码填入: " + (typeInto(curPass, true) ? "成功" : "失败"));
+            return;
+        }
+
+        // phase == 3：点登录按钮，点完必须验证真的离开了登录界面
+        boolean loggedIn = false;
+        if (btnY > 0) {
+            Logger.i("按金色块点登录(" + btnX + "," + btnY + ")");
+            clickPx(btnX, btnY);
+            loggedIn = waitLoginGone(1200);
+        }
+        if (!loggedIn && running && btnY > 0) {
+            Logger.i("无障碍点击没生效，改用 root 注入点登录");
+            clickPxRoot(btnX, btnY);
+            loggedIn = waitLoginGone(1500);
+        }
+        if (!loggedIn && running && clickLoginByText()) {
+            loggedIn = waitLoginGone(1500);
+        }
+        if (!loggedIn && running) {
+            Logger.i("改用比例坐标点登录按钮");
+            clickRatio((float) s.optDouble("btnX", 0.5),
+                    (float) s.optDouble("btnY", 0.554));
+            loggedIn = waitLoginGone(1500);
+        }
+        Logger.i("登录按钮处理完成: " + (loggedIn ? "已离开登录界面" : "未确认离开，继续下一步"));
+    }
+
+    /** 点掉「确定」类按钮（渠道确认框），没有就跳过 */
+    private void doConfirm(JSONObject s) {
+        int cap = Math.max(500, s.optInt("ms", 2500));
+        int poll = Math.max(200, s.optInt("poll", 400));
+        long t0 = System.currentTimeMillis();
+        while (running && System.currentTimeMillis() - t0 < cap) {
+            if (clickTextKeyword(POPUP_OK)) {
+                Logger.i("已点「确定」类按钮");
+                sleep(Math.max(200, s.optInt("waitAfter", 500)));
+                return;
+            }
+            sleep(poll);
+        }
+        Logger.i("没有「确定」按钮，跳过本步");
+    }
+
+    /** 关掉某一个指定弹窗：等出现 -> 点 X -> 确认消失 */
+    private void closeNamedPopup(JSONObject s) {
+        String label = s.optString("label", "弹窗");
+        int cap = Math.max(1500, s.optInt("ms", 12000));
+        int poll = Math.max(300, s.optInt("poll", 600));
+        long t0 = System.currentTimeMillis();
+        while (running && System.currentTimeMillis() - t0 < cap) {
+            pPhase = "关闭" + label;
+            if (closeOnePopup(s)) {
+                sleep(poll);
+                Logger.i(label + " 已关闭（耗时 " + (System.currentTimeMillis() - t0) + " ms）");
+                pPhase = label + "已关闭";
+                return;
+            }
+            sleep(poll);
+        }
+        if (running) {
+            Logger.w(label + " 等待 " + cap + "ms 没找到关闭按钮，可能没有弹出，继续下一步");
+        }
     }
 
     /** 在当前这一帧像素里找右上角的白色 X，返回中心点（找不到返回 null） */
@@ -2326,6 +2571,121 @@ public class AutoService extends AccessibilityService {
             return null;
         }
         return new int[]{x0 + (bx0 + bx1) / 2, y0 + (by0 + by1) / 2};
+    }
+
+    /**
+     * 关闭按钮候选点，越像「右上角的白色 X」排得越前。
+     *
+     * 打分依据（都是像素特征，不依赖具体游戏）：
+     *   1) 位置：越靠右上分越高（弹窗关闭按钮基本都在右上）；
+     *   2) 形状：接近正方形，笔画填充率 0.12~0.5（X 是细笔画，实心灯笼填充率高）；
+     *   3) 大小：边长在屏宽的 3.5%~13% 之间。
+     */
+    private java.util.List<int[]> closeButtonCandidates() {
+        java.util.List<int[]> out = new java.util.ArrayList<int[]>();
+        if (sPix == null) {
+            return out;
+        }
+        int x0 = (int) (sW * 0.45), x1 = sW - 1;
+        int y0 = (int) (sH * 0.02), y1 = (int) (sH * 0.45);
+        int w = x1 - x0 + 1, h = y1 - y0 + 1;
+        if (w <= 4 || h <= 4) {
+            return out;
+        }
+        boolean[] mask = new boolean[w * h];
+        for (int y = 0; y < h; y++) {
+            int base = (y0 + y) * sW + x0;
+            int off = y * w;
+            for (int x = 0; x < w; x++) {
+                mask[off + x] = isWhiteX(sPix[base + x]);
+            }
+        }
+        boolean[] seen = new boolean[w * h];
+        int[] stack = new int[w * h];
+        java.util.List<double[]> scored = new java.util.ArrayList<double[]>();
+        for (int i = 0; i < mask.length; i++) {
+            if (!mask[i] || seen[i]) {
+                continue;
+            }
+            int sp = 0;
+            stack[sp++] = i;
+            seen[i] = true;
+            int area = 0, minX = w, maxX = -1, minY = h, maxY = -1;
+            while (sp > 0) {
+                int cur = stack[--sp];
+                int cx = cur % w, cy = cur / w;
+                area++;
+                if (cx < minX) minX = cx;
+                if (cx > maxX) maxX = cx;
+                if (cy < minY) minY = cy;
+                if (cy > maxY) maxY = cy;
+                for (int dy = -1; dy <= 1; dy++) {
+                    int ny = cy + dy;
+                    if (ny < 0 || ny >= h) {
+                        continue;
+                    }
+                    for (int dx = -1; dx <= 1; dx++) {
+                        int nx = cx + dx;
+                        if (nx < 0 || nx >= w) {
+                            continue;
+                        }
+                        int ni = ny * w + nx;
+                        if (mask[ni] && !seen[ni]) {
+                            seen[ni] = true;
+                            stack[sp++] = ni;
+                        }
+                    }
+                }
+            }
+            int bw = maxX - minX + 1, bh = maxY - minY + 1;
+            if (bw < sW * 0.030 || bw > sW * 0.130) continue;
+            if (bh < sW * 0.030 || bh > sW * 0.130) continue;
+            if (bw > bh * 1.8 || bh > bw * 1.8) continue;
+            double fill = area / (double) (bw * bh);
+            if (fill < 0.12 || fill > 0.55) continue;
+            int gx = x0 + (minX + maxX) / 2;
+            int gy = y0 + (minY + maxY) / 2;
+            double nx = gx / (double) sW;       // 0..1 越右越好
+            double ny = gy / (double) sH;       // 0..1 越上越好
+            double score = nx * 2.2 + (1.0 - ny) * 1.4;
+            if (nx > 0.72) score += 0.6;        // 右上角再奖励
+            if (ny < 0.18) score += 0.4;
+            if (fill >= 0.15 && fill <= 0.40) score += 0.5;   // 细笔画更像 X
+            scored.add(new double[]{score, gx, gy});
+        }
+        // 简单排序：分数高的排前面
+        for (int i = 1; i < scored.size(); i++) {
+            double[] cur = scored.get(i);
+            int j = i - 1;
+            while (j >= 0 && scored.get(j)[0] < cur[0]) {
+                scored.set(j + 1, scored.get(j));
+                j--;
+            }
+            scored.set(j + 1, cur);
+        }
+        for (int i = 0; i < scored.size() && i < 5; i++) {
+            out.add(new int[]{(int) scored.get(i)[1], (int) scored.get(i)[2]});
+        }
+        return out;
+    }
+
+    /** 点完之后回看：那个位置的白 X 是不是真的消失了 */
+    private boolean whiteCrossGoneAt(int x, int y) {
+        if (!shot()) {
+            return false;
+        }
+        int r = Math.max(8, (int) (sW * 0.022));
+        int white = 0, hit = 0;
+        for (int yy = Math.max(0, y - r); yy <= Math.min(sH - 1, y + r); yy++) {
+            int base = yy * sW;
+            for (int xx = Math.max(0, x - r); xx <= Math.min(sW - 1, x + r); xx++) {
+                hit++;
+                if (isWhiteX(sPix[base + xx])) {
+                    white++;
+                }
+            }
+        }
+        return hit > 0 && white * 100 / hit < 3;
     }
 
     /** 近白、低饱和（关闭按钮的白色 X 笔画） */
@@ -2638,6 +2998,12 @@ public class AutoService extends AccessibilityService {
                 if (!ok) {
                     Logger.e("启动应用失败，流程中止（请确认该包名已安装）");
                     running = false;
+                    break;
+                }
+                int after = s.optInt("waitAfter", 0);
+                if (after > 0) {
+                    pPhase = "等待游戏界面加载";
+                    sleep(after);
                 }
                 break;
             }
@@ -2780,6 +3146,26 @@ public class AutoService extends AccessibilityService {
             }
             case "closepopups": {
                 closePopupsToMain(s);
+                break;
+            }
+            case "inputuser": {
+                doLoginPhase(s, 1);
+                break;
+            }
+            case "inputpass": {
+                doLoginPhase(s, 2);
+                break;
+            }
+            case "loginbtn": {
+                doLoginPhase(s, 3);
+                break;
+            }
+            case "confirm": {
+                doConfirm(s);
+                break;
+            }
+            case "closepopup": {
+                closeNamedPopup(s);
                 break;
             }
             default:
