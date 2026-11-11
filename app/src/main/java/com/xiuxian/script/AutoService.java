@@ -47,8 +47,16 @@ public class AutoService extends AccessibilityService {
     public volatile String pCurNote = "";
     /** 当前步骤开始时间戳 */
     public volatile long pCurStart = 0L;
-    /** 当前步骤预计结束时间戳（用来倒计时） */
+    /** 当前步骤预计结束时间戳（真实耗时模式下为 0，仅历史兼容） */
     public volatile long pCurEnd = 0L;
+    /** 当前步骤已耗时毫秒（实时刷新，悬浮窗用它显示已经花掉的时间） */
+    public volatile long pCurElapsedMs = 0L;
+    /** 当前步骤预估耗时毫秒（仅作参考，不再用来倒计时） */
+    public volatile long pEstMs = 0L;
+    /** 当前步骤内的实时子状态，如「等待界面加载」「点击登录按钮」 */
+    public volatile String pPhase = "";
+    /** 最近一次运行的每一步真实耗时记录（供导出与调整等待时间） */
+    public volatile String pTimingReport = "";
     /** 下一步骤描述 */
     public volatile String pNextName = "";
     /** 下一步骤备注 */
@@ -414,6 +422,7 @@ public class AutoService extends AccessibilityService {
     // ================= 脚本执行 =================
 
     public void startScript() {
+        pTimingReport = "";
         if (running) {
             Logger.w("脚本已经在运行中");
             return;
@@ -558,7 +567,12 @@ public class AutoService extends AccessibilityService {
                             break;
                         }
                         publishProgress(steps, j, s);
+                        long __t0 = System.currentTimeMillis();
                         execStep(cfg, s, j + 1);
+                        long __cost = System.currentTimeMillis() - __t0;
+                        pCurElapsedMs = __cost;
+                        pCurEnd = System.currentTimeMillis();
+                        recordTiming(j + 1, steps.length(), s, __cost);
                     }
                 }
                 return;
@@ -589,7 +603,12 @@ public class AutoService extends AccessibilityService {
                             break;
                         }
                         publishProgress(steps, j, s);
+                        long __t0 = System.currentTimeMillis();
                         execStep(cfg, s, j + 1);
+                        long __cost = System.currentTimeMillis() - __t0;
+                        pCurElapsedMs = __cost;
+                        pCurEnd = System.currentTimeMillis();
+                        recordTiming(j + 1, steps.length(), s, __cost);
                     }
                 }
                 Logger.i("账号 " + a.user + " 的流程已走完，准备切下一个账号");
@@ -1462,7 +1481,11 @@ public class AutoService extends AccessibilityService {
             pCurName = "第 " + (j + 1) + "/" + total + " 步 · " + actionName(name);
             pCurNote = note;
             pCurStart = System.currentTimeMillis();
-            pCurEnd = pCurStart + cost;
+            pCurElapsedMs = 0L;
+            pEstMs = cost;
+            pCurEnd = 0L;
+            pPhase = "";
+            Logger.i("[进度] " + pCurName + " | " + note);
             // 重复执行类步骤：次数与间隔（悬浮窗「执行次数和间隔时间」用）
             pStepTimes = Math.max(0, s.optInt("times", s.optInt("repeat", 0)));
             pStepGapMs = Math.max(0L, s.optLong("interval", s.optLong("gap", 0L)));
@@ -1963,7 +1986,9 @@ public class AutoService extends AccessibilityService {
         int retry = Math.max(1, s.optInt("retry", 4));
         long t0 = System.currentTimeMillis();
         for (int i = 1; i <= retry && running; i++) {
+            pPhase = "正在点「进入游戏」(第" + i + "次)";
             if (clickEnterGameOnce()) {
+                pPhase = "已进入游戏，等待界面稳定";
                 Logger.i("点「进入游戏」成功（第 " + i + " 次尝试，耗时 "
                         + (System.currentTimeMillis() - t0) + " ms）");
                 sleep(s.optInt("waitAfter", 1500));
@@ -2038,13 +2063,16 @@ public class AutoService extends AccessibilityService {
         long t0 = System.currentTimeMillis();
         int closed = 0;
         while (running && System.currentTimeMillis() - t0 < maxMs) {
+            pPhase = "确认主界面(已关" + closed + "个弹窗)";
             if (mainUiReady()) {
+                pPhase = "已到主界面";
                 Logger.i("已进入游戏主界面（关掉 " + closed + " 个弹窗，耗时 "
                         + (System.currentTimeMillis() - t0) + " ms）");
                 return;
             }
             if (closeOnePopup(s)) {
                 closed++;
+                pPhase = "已关闭第" + closed + "个弹窗";
                 Logger.i("已关闭第 " + closed + " 个弹窗，继续确认主界面");
                 sleep(poll);
             } else {
@@ -2342,6 +2370,7 @@ public class AutoService extends AccessibilityService {
                 if (waits[i] > 0) {
                     sleep(waits[i]);
                 }
+                pPhase = "等待登录界面加载(第" + (i + 1) + "次探测)";
                 ui = locateLoginUi();
                 if (ui != null) {
                     break;
@@ -2411,6 +2440,7 @@ public class AutoService extends AccessibilityService {
             okU = clickRatio((float) s.optDouble("userX", 0.5),
                     (float) s.optDouble("userY", 0.349));
         }
+        pPhase = "填写账号";
         Logger.i("账号框点击: " + (okU ? "成功" : "失败"));
         waitKeyboard(s.optInt("tapDelay", 900));
         Logger.i("账号填入: " + (typeInto(curUser, false) ? "成功" : "失败"));
@@ -2435,6 +2465,7 @@ public class AutoService extends AccessibilityService {
             okP = clickRatio((float) s.optDouble("passX", 0.5),
                     (float) s.optDouble("passY", 0.451));
         }
+        pPhase = "填写密码";
         Logger.i("密码框点击: " + (okP ? "成功" : "失败"));
         waitKeyboard(s.optInt("tapDelay", 900));
         Logger.i("密码填入: " + (typeInto(curPass, true) ? "成功" : "失败"));
@@ -2539,6 +2570,7 @@ public class AutoService extends AccessibilityService {
     private void execStep(JSONObject cfg, JSONObject s, int index) {
         String action = s.optString("action", "").trim();
         Logger.i("步骤 " + index + ": " + action);
+        pPhase = actionName(action);
         // 每步开跑前扫一眼公告/提示弹窗：有就点「确定」，免得后面每步都点不动。
         // login 与 dismisspopup 步骤自己会处理，跳过以免重复点击。
         if (cfg.optBoolean("autoPopup", true)
@@ -2740,6 +2772,46 @@ public class AutoService extends AccessibilityService {
                 return;
             }
             left -= step;
+            if (pCurStart > 0L) {
+                pCurElapsedMs = System.currentTimeMillis() - pCurStart;
+            }
         }
+    }
+
+    /** 记录每一步的真实耗时，并打印到日志（便于据此调整等待时间） */
+    private void recordTiming(int stepNo, int total, JSONObject s, long costMs) {
+        try {
+            String action = s == null ? "" : s.optString("action", "").trim();
+            String note = s == null ? "" : s.optString("note", s.optString("desc", ""));
+            if (note == null || note.isEmpty()) {
+                note = actionNote(action, s);
+            }
+            String line = "第 " + stepNo + "/" + total + " 步 " + actionName(action)
+                    + (note.isEmpty() ? "" : "（" + note + "）")
+                    + " 实际耗时 " + fmtSec(costMs);
+            Logger.i("[耗时] " + line);
+            String rep = pTimingReport;
+            if (rep == null) {
+                rep = "";
+            }
+            pTimingReport = rep + line + "\n";
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 毫秒 -> 便于阅读的秒数 */
+    public static String fmtSec(long ms) {
+        return String.format(java.util.Locale.US, "%.1fs", ms / 1000.0);
+    }
+
+    /** 导出最近一次运行的每一步实际耗时（悬浮球长按面板里可查看/复制） */
+    public String timingReport() {
+        String r = pTimingReport;
+        return (r == null || r.isEmpty()) ? "还没有运行记录" : r;
+    }
+
+    /** 清空耗时记录 */
+    public void clearTiming() {
+        pTimingReport = "";
     }
 }
