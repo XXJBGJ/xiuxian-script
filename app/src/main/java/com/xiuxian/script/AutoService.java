@@ -99,6 +99,22 @@ public class AutoService extends AccessibilityService {
             login.put("retry", 2);
             login.put("waitAfter", 6000);
             steps.put(login);
+
+            // 选服页 -> 点「进入游戏」
+            JSONObject enter = new JSONObject();
+            enter.put("action", "entergame");
+            enter.put("retry", 4);
+            enter.put("poll", 700);
+            enter.put("waitAfter", 1500);
+            steps.put(enter);
+
+            // 进游戏后的弹窗：奇货居 / 离线收益 / 其它，逐个关到主界面为止
+            JSONObject cls = new JSONObject();
+            cls.put("action", "closepopups");
+            cls.put("maxMs", 30000);
+            cls.put("poll", 700);
+            steps.put(cls);
+
             o.put("steps", steps);
         } catch (Throwable ignored) {
         }
@@ -1486,6 +1502,8 @@ public class AutoService extends AccessibilityService {
             case "findimg":
             case "findimage": return "找图点击";
             case "findtext": return "找字点击";
+            case "entergame": return "点击进入游戏";
+            case "closepopups": return "关闭弹窗直到主界面";
             case "log": return "记录日志";
             default: return a.isEmpty() ? "未知步骤" : a;
         }
@@ -1505,6 +1523,8 @@ public class AutoService extends AccessibilityService {
             case "findimage": return "在屏幕上找模板图并点击";
             case "findtext": return "在界面文字里找关键词并点击";
             case "back": return "按一次返回";
+            case "entergame": return "在选服页点「进入游戏」";
+            case "closepopups": return "奇货居/离线收益等弹窗逐个关到主界面";
             case "log": return "写一条日志";
             default: return "";
         }
@@ -1656,6 +1676,14 @@ public class AutoService extends AccessibilityService {
 
     /** 出现这些字样基本可判定是公告/提示弹窗，点掉不会误伤游戏主界面 */
     private static final String[] POPUP_MARK = {"公告", "通知", "提示", "维护", "更新", "致玩家"};
+
+    /** 能读到这些字样说明已经站在游戏主界面上（弹窗都清干净了） */
+    private static final String[] MAIN_UI_MARK =
+            {"行囊", "背包", "修仙", "境界", "灵根", "设置", "邮件", "商城", "任务", "好友"};
+
+    /** 关闭按钮关键字（原生弹窗会给按钮起名） */
+    private static final String[] CLOSE_KEYS =
+            {"关闭", "关 闭", "Close", "close", "取消", "确定", "x", "X"};
 
     /**
      * 干掉当前屏幕上的公告类弹窗，返回是否真的点过。
@@ -1922,6 +1950,356 @@ public class AutoService extends AccessibilityService {
     }
 
     /** 只判断有没有这张模板图，不点击（复用 findImage 的匹配，靠开关屏蔽点击） */
+    // =================================================================
+    // 进入游戏 + 弹窗清理（构建 60）
+    // -----------------------------------------------------------------
+    // 通关流程：login（已填账号密码并点登录）
+    //        -> entergame（服务器选择页点「进入游戏」）
+    //        -> closepopups（奇货居 / 离线收益 / 其它弹窗，逐个关到主界面为止）
+    // =================================================================
+
+    /** 点「进入游戏」：先按文字点，再按底部暖色块点，都没命中就重试几次 */
+    private void doEnterGame(JSONObject s) {
+        int retry = Math.max(1, s.optInt("retry", 4));
+        long t0 = System.currentTimeMillis();
+        for (int i = 1; i <= retry && running; i++) {
+            if (clickEnterGameOnce()) {
+                Logger.i("点「进入游戏」成功（第 " + i + " 次尝试，耗时 "
+                        + (System.currentTimeMillis() - t0) + " ms）");
+                sleep(s.optInt("waitAfter", 1500));
+                return;
+            }
+            sleep(s.optInt("poll", 700));
+        }
+        Logger.w("没有点到「进入游戏」，继续往下走");
+    }
+
+    private boolean clickEnterGameOnce() {
+        // 1) 控件文字优先
+        if (clickTextKeyword(new String[]{"进入游戏", "进入遊戲", "点击进入", "开始游戏", "进入"})) {
+            return true;
+        }
+        // 2) 底部那条暖色实心横条（选服页的「进入游戏」就是这种块）
+        if (shot()) {
+            int[] p = warmBarInBand(0.70, 0.99, 0.16, 0.88);
+            if (p != null) {
+                Logger.i("按暖色块点「进入游戏」 (" + p[0] + "," + p[1] + ")");
+                return clickPx(p[0], p[1]);
+            }
+        }
+        return false;
+    }
+
+    /** 在指定纵向区间里找最长的一条暖色横条，返回它的中心点 */
+    private int[] warmBarInBand(double y0r, double y1r, double minWr, double maxWr) {
+        if (sPix == null) {
+            return null;
+        }
+        int y0 = (int) (sH * y0r);
+        int y1 = (int) (sH * y1r);
+        int bestY = -1, bestRun = 0, bestCx = 0;
+        for (int y = Math.max(0, y0); y < Math.min(sH, y1); y++) {
+            int run = 0, sumX = 0, runRow = 0, sumRow = 0;
+            for (int x = 0; x < sW; x++) {
+                if (isWarm(sPix[y * sW + x])) {
+                    run++;
+                    sumX += x;
+                    if (run > runRow) {
+                        runRow = run;
+                        sumRow = sumX;
+                    }
+                } else {
+                    run = 0;
+                    sumX = 0;
+                }
+            }
+            if (runRow > bestRun) {
+                bestRun = runRow;
+                bestY = y;
+                bestCx = sumRow / Math.max(1, runRow);
+            }
+        }
+        if (bestRun >= sW * minWr && bestRun <= sW * maxWr) {
+            return new int[]{bestCx, bestY};
+        }
+        return null;
+    }
+
+    /** 暖色：偏橙 / 金 / 米黄的按钮底色 */
+    private boolean isWarm(int c) {
+        int r = c >> 16 & 0xFF, g = c >> 8 & 0xFF, b = c & 0xFF;
+        return r >= 195 && g >= 140 && b <= 185 && (r - b) >= 55 && r >= g - 12;
+    }
+
+    /** 点掉弹窗、直到确认站上主界面为止 */
+    private void closePopupsToMain(JSONObject s) {
+        int maxMs = Math.max(2000, s.optInt("maxMs", 30000));
+        int poll = Math.max(300, s.optInt("poll", 700));
+        long t0 = System.currentTimeMillis();
+        int closed = 0;
+        while (running && System.currentTimeMillis() - t0 < maxMs) {
+            if (mainUiReady()) {
+                Logger.i("已进入游戏主界面（关掉 " + closed + " 个弹窗，耗时 "
+                        + (System.currentTimeMillis() - t0) + " ms）");
+                return;
+            }
+            if (closeOnePopup(s)) {
+                closed++;
+                Logger.i("已关闭第 " + closed + " 个弹窗，继续确认主界面");
+                sleep(poll);
+            } else {
+                sleep(poll);
+            }
+        }
+        Logger.w("等主界面超时（已关 " + closed + " 个弹窗），可能还停在弹窗上");
+    }
+
+    /**
+     * 判定是否已经在游戏主界面。
+     * 顺序：能读到「行囊」等底部标签 -> 视为主界面；
+     *       读不到（Unity 画面通常在控件树里没有文字）就看画面：
+     *       右上角还有白色 X（弹窗）、或整屏被半透明黑压暗，都不算主界面。
+     */
+    private boolean mainUiReady() {
+        if (textHasAny(MAIN_UI_MARK)) {
+            return true;
+        }
+        if (!shot()) {
+            return false;
+        }
+        if (closeButtonOnFrame() != null) {
+            return false;
+        }
+        return !dimOverlay();
+    }
+
+    /** 控件树里能否读到这些字样中的任意一个 */
+    private boolean textHasAny(String[] keys) {
+        try {
+            android.view.accessibility.AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root == null) {
+                return false;
+            }
+            java.util.List<android.view.accessibility.AccessibilityNodeInfo> all =
+                    new java.util.ArrayList<android.view.accessibility.AccessibilityNodeInfo>();
+            collectNodes(root, all, 0);
+            for (android.view.accessibility.AccessibilityNodeInfo n : all) {
+                String t = nodeText(n);
+                if (t == null || t.length() == 0) {
+                    continue;
+                }
+                for (String k : keys) {
+                    if (t.contains(k)) {
+                        return true;
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
+    /** 按下文字点一个控件（无障碍树 -> 层级 XML 两条通道） */
+    private boolean clickTextKeyword(String[] keys) {
+        try {
+            android.view.accessibility.AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root != null) {
+                java.util.List<android.view.accessibility.AccessibilityNodeInfo> all =
+                        new java.util.ArrayList<android.view.accessibility.AccessibilityNodeInfo>();
+                collectNodes(root, all, 0);
+                for (android.view.accessibility.AccessibilityNodeInfo n : all) {
+                    String t = nodeText(n);
+                    if (t == null || t.length() == 0) {
+                        continue;
+                    }
+                    boolean hit = false;
+                    for (String k : keys) {
+                        if (t.contains(k)) {
+                            hit = true;
+                            break;
+                        }
+                    }
+                    if (!hit) {
+                        continue;
+                    }
+                    android.graphics.Rect r = new android.graphics.Rect();
+                    n.getBoundsInScreen(r);
+                    if (r.width() <= 0 || r.height() <= 0) {
+                        continue;
+                    }
+                    if (n.isClickable() && n.performAction(
+                            android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK)) {
+                        Logger.i("按文字点击「" + t + "」");
+                        return true;
+                    }
+                    Logger.i("按文字点击「" + t + "」(" + r.centerX() + "," + r.centerY() + ")");
+                    return clickPx(r.centerX(), r.centerY());
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        for (UiNode n : dumpUi()) {
+            if (n.text == null || n.text.length() == 0) {
+                continue;
+            }
+            boolean hit = false;
+            for (String k : keys) {
+                if (n.text.contains(k)) {
+                    hit = true;
+                    break;
+                }
+            }
+            if (hit) {
+                Logger.i("按文字点击「" + n.text + "」(" + n.cx() + "," + n.cy() + ")");
+                return clickPx(n.cx(), n.cy());
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 关掉当前这个弹窗。
+     * 奇货居、离线收益以及其它弹窗的关闭按钮都是右上角同样的白色 X，
+     * 所以不区分是哪个弹窗，统一按「白色 X」定位；识别不到才用位置兜底。
+     */
+    private boolean closeOnePopup(JSONObject s) {
+        // 1) 原生弹窗直接给按钮起了名字
+        if (clickTextKeyword(CLOSE_KEYS)) {
+            return true;
+        }
+        // 2) 右上角白色 X（奇货居 / 离线收益 / 其它弹窗共用这一种按钮）
+        if (shot()) {
+            int[] p = closeButtonOnFrame();
+            if (p != null) {
+                Logger.i("识别到弹窗关闭按钮 (" + p[0] + "," + p[1] + ")");
+                return clickPx(p[0], p[1]);
+            }
+        }
+        // 3) 配了模板图就再用模板兜一次
+        String tpl = s.optString("tplClose", "");
+        if (tpl.length() > 0 && findImage(tpl, 0.82)) {
+            return true;
+        }
+        // 4) 最后兜底：只有在「确实有遮罩」时才按右上角位置点一下，
+        //    避免在主界面上乱点右上角误触游戏功能
+        if (sPix != null && dimOverlay()) {
+            int fx = (int) (sW * 0.905);
+            int fy = (int) (sH * 0.215);
+            Logger.w("没识别到关闭按钮但屏幕有遮罩，按右上角兜底点 (" + fx + "," + fy + ")");
+            return clickPx(fx, fy);
+        }
+        return false;
+    }
+
+    /** 在当前这一帧像素里找右上角的白色 X，返回中心点（找不到返回 null） */
+    private int[] closeButtonOnFrame() {
+        if (sPix == null) {
+            return null;
+        }
+        int x0 = (int) (sW * 0.55), x1 = sW - 1;
+        int y0 = (int) (sH * 0.04), y1 = (int) (sH * 0.46);
+        int w = x1 - x0 + 1, h = y1 - y0 + 1;
+        if (w <= 4 || h <= 4) {
+            return null;
+        }
+        boolean[] mask = new boolean[w * h];
+        for (int y = 0; y < h; y++) {
+            int base = (y0 + y) * sW + x0;
+            int off = y * w;
+            for (int x = 0; x < w; x++) {
+                mask[off + x] = isWhiteX(sPix[base + x]);
+            }
+        }
+        boolean[] seen = new boolean[w * h];
+        int[] stack = new int[w * h];
+        int bestArea = 0, bx0 = 0, by0 = 0, bx1 = 0, by1 = 0;
+        for (int i = 0; i < mask.length; i++) {
+            if (!mask[i] || seen[i]) {
+                continue;
+            }
+            int sp = 0;
+            stack[sp++] = i;
+            seen[i] = true;
+            int area = 0, minX = w, maxX = -1, minY = h, maxY = -1;
+            while (sp > 0) {
+                int cur = stack[--sp];
+                int cx = cur % w, cy = cur / w;
+                area++;
+                if (cx < minX) minX = cx;
+                if (cx > maxX) maxX = cx;
+                if (cy < minY) minY = cy;
+                if (cy > maxY) maxY = cy;
+                for (int dy = -1; dy <= 1; dy++) {
+                    int ny = cy + dy;
+                    if (ny < 0 || ny >= h) {
+                        continue;
+                    }
+                    for (int dx = -1; dx <= 1; dx++) {
+                        int nx = cx + dx;
+                        if (nx < 0 || nx >= w) {
+                            continue;
+                        }
+                        int ni = ny * w + nx;
+                        if (mask[ni] && !seen[ni]) {
+                            seen[ni] = true;
+                            stack[sp++] = ni;
+                        }
+                    }
+                }
+            }
+            int bw = maxX - minX + 1, bh = maxY - minY + 1;
+            // 像个小方块的才算按钮：太小是噪点，太大是别的白块，细长的是文字笔画
+            if (bw < sW * 0.035 || bw > sW * 0.16) continue;
+            if (bh < sW * 0.035 || bh > sW * 0.16) continue;
+            if (bw > bh * 2 || bh > bw * 2) continue;
+            if (area < bw * bh * 0.15) continue;
+            if (area > bestArea) {
+                bestArea = area;
+                bx0 = minX;
+                by0 = minY;
+                bx1 = maxX;
+                by1 = maxY;
+            }
+        }
+        if (bestArea == 0) {
+            return null;
+        }
+        return new int[]{x0 + (bx0 + bx1) / 2, y0 + (by0 + by1) / 2};
+    }
+
+    /** 近白、低饱和（关闭按钮的白色 X 笔画） */
+    private boolean isWhiteX(int c) {
+        int r = c >> 16 & 0xFF, g = c >> 8 & 0xFF, b = c & 0xFF;
+        int mx = Math.max(r, Math.max(g, b));
+        int mn = Math.min(r, Math.min(g, b));
+        return mn >= 200 && (mx - mn) <= 34;
+    }
+
+    /** 顶部横条是不是被半透明黑遮罩压暗了（弹窗弹出时会有这层遮罩） */
+    private boolean dimOverlay() {
+        if (sPix == null) {
+            return false;
+        }
+        long sum = 0;
+        int n = 0;
+        int xa = (int) (sW * 0.06), xb = (int) (sW * 0.94);
+        for (int i = 0; i < 3; i++) {
+            int y = (int) (sH * (0.04 + i * 0.025));
+            if (y < 0 || y >= sH) {
+                continue;
+            }
+            for (int x = xa; x < xb; x += 4) {
+                int c = sPix[y * sW + x];
+                sum += ((c >> 16 & 0xFF) * 30 + (c >> 8 & 0xFF) * 59 + (c & 0xFF) * 11) / 100;
+                n++;
+            }
+        }
+        if (n == 0) {
+            return false;
+        }
+        return (sum / n) < 95;
+    }
+
     private boolean findImageQuiet(String tplName) {
         imgQuiet = true;
         try {
@@ -2329,6 +2707,14 @@ public class AutoService extends AccessibilityService {
             }
             case "log": {
                 Logger.i(resolve(s.optString("msg", "")));
+                break;
+            }
+            case "entergame": {
+                doEnterGame(s);
+                break;
+            }
+            case "closepopups": {
+                closePopupsToMain(s);
                 break;
             }
             default:
