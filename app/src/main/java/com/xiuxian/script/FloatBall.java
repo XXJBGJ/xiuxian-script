@@ -98,7 +98,8 @@ public class FloatBall {
             if (!showing && root != null) {
                 wm.addView(root, lp);
                 showing = true;
-                snapToEdge(true);
+                // 初始位置：屏幕顶部右侧（与左侧的日志悬浮窗并排），不做半隐藏
+                placeTopRight();
             }
         } catch (Throwable t) {
             Logger.e("悬浮球显示失败: " + t);
@@ -194,6 +195,21 @@ public class FloatBall {
         lp.x = targetX;
         lp.y = clamp(lp.y, FloatWindow.dp(ctx, 20), wh[1] - h - FloatWindow.dp(ctx, 20));
         try {
+            wm.updateViewLayout(root, lp);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 摆到屏幕顶部右侧（留一点边距，避开状态栏） */
+    private void placeTopRight() {
+        try {
+            int[] wh = screen();
+            int w = lp.width > 0 ? lp.width : FloatWindow.dp(ctx, BALL_DP + 10);
+            int h = lp.height > 0 ? lp.height : FloatWindow.dp(ctx, BALL_DP + 10);
+            dockedLeft = false;
+            lp.x = Math.max(0, wh[0] - w - FloatWindow.dp(ctx, 6));
+            lp.y = FloatWindow.dp(ctx, 30);
+            lp.y = clamp(lp.y, 0, Math.max(0, wh[1] - h));
             wm.updateViewLayout(root, lp);
         } catch (Throwable ignored) {
         }
