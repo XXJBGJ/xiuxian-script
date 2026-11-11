@@ -171,16 +171,19 @@ public class AutoService extends AccessibilityService {
 
     @Override
     public boolean onUnbind(android.content.Intent intent) {
+        // 【构建 66】服务被系统回收/重启时不要终止脚本。
+        // 原来这里把 running 置 false，导致点「进入游戏」时系统重启无障碍服务后，
+        // 工作线程直接退出，第 5 步（关弹窗到主界面）永远不执行。
+        // 现在只断开单例引用，工作线程继续跑，点击自动走 root tap 兜底。
         instance = null;
-        running = false;
-        Logger.w("无障碍服务已关闭");
+        Logger.w("无障碍服务已关闭（脚本继续运行，等待服务重连）");
         return super.onUnbind(intent);
     }
 
     @Override
     public void onDestroy() {
         instance = null;
-        running = false;
+        Logger.w("无障碍服务已销毁（脚本继续运行，等待服务重连）");
         super.onDestroy();
     }
 
@@ -613,6 +616,17 @@ public class AutoService extends AccessibilityService {
                 }
                 Logger.i("账号 " + a.user + " 的流程已走完，准备切下一个账号");
                 sleep(800);
+            }
+            // 【构建 66】流程跑完后再扫一遍弹窗，避免结束后一直停在
+            // 奇货居 / 离线收益 / 域外凶兽 这类活动弹窗上（只点右上角 X）
+            try {
+                for (int pi = 0; pi < 6; pi++) {
+                    Thread.sleep(700);
+                    if (!dismissPopups()) {
+                        break;
+                    }
+                }
+            } catch (Throwable ignored) {
             }
             Logger.i("全部 " + accTotal + " 个勾选账号已处理完毕");
         } catch (Throwable t) {
@@ -1790,6 +1804,19 @@ public class AutoService extends AccessibilityService {
         // 读不到「公告」二字，一旦被 hasMark 挡住，公告就永远点不掉。
         // 安全前提：登录卡还挂在屏幕上时绝不按颜色乱点（否则会把「登录」当「确定」）。
         if (!loginCardStill()) {
+            // 【构建 66】优先找右上角关闭按钮 X（奇货居 / 离线收益 / 域外凶兽 共用）。
+            // 这类活动弹窗中间是橙色「前往」，按颜色点中部会直接进入活动或卡死，
+            // 所以只要识别到 X，就只点关闭按钮，别的位置一律不点。
+            try {
+                if (shot()) {
+                    int[] cp = closeButtonOnFrame();
+                    if (cp != null) {
+                        Logger.i("弹窗右上角有关闭按钮，只点 X (" + cp[0] + "," + cp[1] + ")");
+                        return clickPx(cp[0], cp[1]);
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
             try {
                 if (popupByColor()) {
                     return true;
@@ -1806,6 +1833,12 @@ public class AutoService extends AccessibilityService {
      */
     private boolean popupByColor() {
         if (!shot()) {
+            return false;
+        }
+        // 【构建 66】只要屏幕右上角存在关闭按钮 X，就一律不按颜色点中部。
+        // 奇货居 / 域外凶兽 弹窗中间的「前往」是橙色实心条，会被误判成公告的
+        // 「确定」点掉，结果直接进入对应活动；离线收益中间按钮是灰色，点了无响应会卡死。
+        if (closeButtonOnFrame() != null) {
             return false;
         }
         // 公告的「确定」比登录按钮窄，占比阈值放低一些
