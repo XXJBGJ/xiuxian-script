@@ -247,6 +247,14 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         refreshStatus();
+        // 悬浮球常驻：只要有悬浮窗权限就显示（不依赖脚本是否运行）
+        try {
+            if (canDrawOverlay()) {
+                FloatBall.get(this).show();
+            }
+        } catch (Throwable t) {
+            Logger.e("悬浮球显示失败: " + t);
+        }
         // 从授权页返回：权限齐了就自动接着启动，中途还需补另一个权限时继续跳
         if (pendingStart) {
             boolean acc = isAccessibilityOn() || AutoService.get() != null;
