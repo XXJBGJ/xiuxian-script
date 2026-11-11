@@ -1040,19 +1040,42 @@ public class MainActivity extends Activity {
      */
     private void copyLogToClipboard() {
         try {
-            String text = Logger.fullText();
-            if (text == null || text.trim().length() == 0) {
+            String text = "";
+            try {
+                text = Logger.fullText();
+            } catch (Throwable ignored) {
+            }
+            if (text == null) {
+                text = "";
+            }
+            // 文件读不出来时，退回界面上已经铺开的日志，保证一定有东西可复制
+            if (text.trim().length() == 0 && logBuffer != null) {
+                text = logBuffer;
+            }
+            if (text.trim().length() == 0) {
                 toast("还没有日志，先点「启动脚本」跑一次");
                 return;
             }
+            int lines = text.split(NL).length;
+            // 剪贴板要跨进程传输，整段太大（几十万字符）会静默失败，
+            // 这里只保留最后 20 万字符，粘出来照样能看关键过程。
+            final int CAP = 200000;
+            if (text.length() > CAP) {
+                text = "……（日志太长，只保留最后部分）……" + NL
+                        + text.substring(text.length() - CAP);
+            }
             android.content.ClipboardManager cm = (android.content.ClipboardManager)
                     getSystemService(Context.CLIPBOARD_SERVICE);
+            if (cm == null) {
+                toast("系统剪贴板不可用");
+                return;
+            }
             cm.setPrimaryClip(android.content.ClipData.newPlainText("修仙脚本日志", text));
-            int lines = text.split(NL).length;
             toast("已复制 " + lines + " 行日志，粘贴发我就行");
             Logger.i("日志已复制到剪贴板（" + lines + " 行）");
         } catch (Throwable t) {
             toast("复制失败: " + t.getClass().getSimpleName());
+            Logger.w("复制日志失败: " + t);
         }
     }
 
