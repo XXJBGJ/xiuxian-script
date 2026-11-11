@@ -1000,6 +1000,76 @@ public class AutoService extends AccessibilityService {
     }
 
     /**
+     * 取屏幕上真实的输入框控件（返回按 y 从上到下排好序）。
+     *
+     * 为什么必须有这个方法：颜色法对天途这种「白底登录卡」完全不可靠——
+     * 账号框与卡片底色几乎同色，推断出来的 y 常常落到密码框那一行或两框之间的空白，
+     * 于是账号被填进密码框，密码又填进同一行，表现就是「只填了密码、账号没填」。
+     * 这里直接读控件树的 bounds，坐标就是真实像素，和分辨率 / DPI 无关。
+     */
+    private java.util.List<UiNode> editableNodes() {
+        final java.util.List<UiNode> out = new java.util.ArrayList<UiNode>();
+        try {
+            android.view.accessibility.AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root != null) {
+                java.util.List<android.view.accessibility.AccessibilityNodeInfo> all =
+                        new java.util.ArrayList<android.view.accessibility.AccessibilityNodeInfo>();
+                collectNodes(root, all, 0);
+                for (android.view.accessibility.AccessibilityNodeInfo n : all) {
+                    CharSequence cls = n.getClassName();
+                    if (cls == null || cls.toString().indexOf("EditText") < 0) {
+                        continue;
+                    }
+                    android.graphics.Rect r = new android.graphics.Rect();
+                    n.getBoundsInScreen(r);
+                    if (r.width() <= 0 || r.height() <= 0) {
+                        continue;
+                    }
+                    // 太窄的（搜索小框之类）不算登录框
+                    if (r.width() < sW * 0.2) {
+                        continue;
+                    }
+                    UiNode u = new UiNode();
+                    u.text = nodeText(n);
+                    u.cls = cls.toString();
+                    u.left = r.left;
+                    u.top = r.top;
+                    u.right = r.right;
+                    u.bottom = r.bottom;
+                    out.add(u);
+                }
+            }
+        } catch (Throwable t) {
+            Logger.w("读取输入框控件异常: " + t.getClass().getSimpleName());
+        }
+        java.util.Collections.sort(out, new java.util.Comparator<UiNode>() {
+            @Override
+            public int compare(UiNode a, UiNode b) {
+                return a.top - b.top;
+            }
+        });
+        return out;
+    }
+
+    /** 从界面层级 XML 里挑出输入框，按 y 排序（无障碍树拿不到时的备用通道） */
+    private java.util.List<UiNode> editableFromDump() {
+        java.util.List<UiNode> out = new java.util.ArrayList<UiNode>();
+        for (UiNode n : dumpUi()) {
+            if (n.cls != null && n.cls.indexOf("EditText") >= 0
+                    && (n.right - n.left) >= sW * 0.2) {
+                out.add(n);
+            }
+        }
+        java.util.Collections.sort(out, new java.util.Comparator<UiNode>() {
+            @Override
+            public int compare(UiNode a, UiNode b) {
+                return a.top - b.top;
+            }
+        });
+        return out;
+    }
+
+    /**
      * 自动定位「账号框 / 密码框 / 登录按钮」。
      *
      * 登录按钮是界面上最大的一块金色实心条，先按颜色找出来；
@@ -1664,8 +1734,11 @@ public class AutoService extends AccessibilityService {
             Logger.w("处理公告弹窗异常: " + t.getClass().getSimpleName());
         }
 
-        // 无障碍层拿不到按钮时，用颜色兜底（公告的「确定」是橙色实心块）
-        if (hasMark) {
+        // 无障碍层拿不到按钮时，用颜色兜底（公告的「确定」是橙色实心块）。
+        // 不再要求先命中 hasMark：天途这类界面把公告正文画在画布里，控件树里
+        // 读不到「公告」二字，一旦被 hasMark 挡住，公告就永远点不掉。
+        // 安全前提：登录卡还挂在屏幕上时绝不按颜色乱点（否则会把「登录」当「确定」）。
+        if (!loginCardStill()) {
             try {
                 if (popupByColor()) {
                     return true;
@@ -1710,6 +1783,32 @@ public class AutoService extends AccessibilityService {
         }
         clickPxRoot(sW / 2, cy2);
         return true;
+    }
+
+    /**
+     * 进游戏后再守一会儿，专门接住「晚刷出来」的公告/活动弹窗。
+     * 刷出来一个就点掉一个；连续 1.2s 没有新弹窗且已等够 2s 就提前结束，
+     * 不会把每一步都拖成固定死等。
+     */
+    private int settlePopups(int maxMs) {
+        long t0 = System.currentTimeMillis();
+        long end = t0 + Math.max(0, maxMs);
+        int n = 0;
+        long quiet = 0;
+        while (running && System.currentTimeMillis() < end) {
+            if (dismissPopups()) {
+                n++;
+                quiet = 0;
+                sleep(400);
+            } else {
+                quiet += 250;
+                if (quiet >= 1200 && System.currentTimeMillis() - t0 >= 2000) {
+                    break;
+                }
+                sleep(250);
+            }
+        }
+        return n;
     }
 
     /**
@@ -1883,10 +1982,41 @@ public class AutoService extends AccessibilityService {
             nodes = dumpUi();
         }
 
+        // ---------- 输入框用真实控件坐标（颜色推断只作兜底）----------
+        // 这一步是「账号没填、只填了密码」的根因修复：
+        // 以前账号 / 密码的 y 全靠颜色横条推断，白底卡上必然算偏，
+        // 两个坐标会落到同一行（密码框），于是账号被写进密码框、密码又覆盖一次。
+        int userX = (ui == null ? -1 : ui[0]);
+        int userY = (ui == null ? -1 : ui[1]);
+        int passX = (ui == null ? -1 : ui[2]);
+        int passY = (ui == null ? -1 : ui[3]);
+        java.util.List<UiNode> inputs = null;
+        if (s.optBoolean("byText", true)) {
+            inputs = editableNodes();
+            if (inputs.size() < 2) {
+                java.util.List<UiNode> alt = editableFromDump();
+                if (alt.size() > inputs.size()) {
+                    inputs = alt;
+                }
+            }
+        }
+        if (inputs != null && inputs.size() >= 2) {
+            UiNode a = inputs.get(0);
+            UiNode b = inputs.get(inputs.size() - 1);
+            userX = a.cx();
+            userY = a.cy();
+            passX = b.cx();
+            passY = b.cy();
+            Logger.i("控件定位输入框：账号(" + userX + "," + userY + ")"
+                    + "  密码(" + passX + "," + passY + ")");
+        } else {
+            Logger.w("控件树里没有拿到 2 个输入框，仍按颜色/比例坐标兜底");
+        }
+
         // ---------- 账号框 ----------
         boolean okU = false;
-        if (ui != null && ui[1] > 0) {
-            okU = clickPx(ui[0], ui[1]);
+        if (userY > 0) {
+            okU = clickPx(userX, userY);
         }
         if (!okU && nodes != null) {
             UiNode n = findNode(nodes, USER_KEYS, true);
@@ -1909,8 +2039,8 @@ public class AutoService extends AccessibilityService {
 
         // ---------- 密码框 ----------
         boolean okP = false;
-        if (ui != null && ui[3] > 0) {
-            okP = clickPx(ui[2], ui[3]);
+        if (passY > 0) {
+            okP = clickPx(passX, passY);
         }
         if (!okP && nodes != null) {
             UiNode n = findNode(nodes, PASS_KEYS, true);
@@ -1930,6 +2060,25 @@ public class AutoService extends AccessibilityService {
         Logger.i("密码框点击: " + (okP ? "成功" : "失败"));
         waitKeyboard(s.optInt("tapDelay", 900));
         Logger.i("密码填入: " + (typeInto(curPass, true) ? "成功" : "失败"));
+
+        // ---------- 填完核验：账号框里必须真的有账号 ----------
+        // 天途这类界面填错框是高频问题，这里直接回读最上面那个输入框，
+        // 里面不是本次账号就重新点它补填一次，避免「空着账号去点登录」。
+        if (s.optBoolean("byText", true)) {
+            java.util.List<UiNode> chk = editableNodes();
+            if (chk.size() >= 2) {
+                String t0 = chk.get(0).text == null ? "" : chk.get(0).text.trim();
+                if (!t0.contains(curUser)) {
+                    Logger.w("账号框里没有本账号（读到「" + t0 + "」），重新点账号框补填");
+                    clickPx(chk.get(0).cx(), chk.get(0).cy());
+                    waitKeyboard(700);
+                    typeInto(curUser, false);
+                    Logger.i("账号补填完成");
+                } else {
+                    Logger.i("账号框校验通过");
+                }
+            }
+        }
 
         // ---------- 登录按钮：点完必须验证，没进去就换招再点 ----------
         boolean loggedIn = false;
@@ -1998,6 +2147,14 @@ public class AutoService extends AccessibilityService {
         // 登录后：不再固定死等。轮询识别——公告弹窗点「确定」，识别到就立刻进入下一步，
         // 一直识别不到才重试点登录（识别失败重试本步，不空等）。
         waitEnterGame(s);
+
+        // 公告/开服活动常常比登录卡晚一两拍才刷出来。
+        // 以前 waitEnterGame 一返回就立刻结束流程，公告还挂在屏幕上没人点，
+        // 看起来就是「界面刷新出公告、但脚本没有点确定」。这里再守一段。
+        int latePopups = settlePopups(s.optInt("popupGrace", 6000));
+        if (latePopups > 0) {
+            Logger.i("进游戏后又点掉 " + latePopups + " 个公告/活动弹窗");
+        }
         Logger.i("登录流程总耗时 " + (System.currentTimeMillis() - tStart) + " ms");
     }
 
