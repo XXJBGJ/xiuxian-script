@@ -816,6 +816,20 @@ public class AutoService extends AccessibilityService {
         }
     }
 
+    /** 回读文本是否只是一串掩码符号（账号框也可能被游戏做成密码型） */
+    private static boolean isMaskedText(String s) {
+        if (s == null || s.length() == 0) {
+            return false;
+        }
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c != '\u2022' && c != '\u00b7' && c != '*' && c != '\u25cf' && c != '\u25cb') {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /**
      * 往当前焦点框填字并回读校验。
      * 框里本来就是空的时候跳过清空（省 200ms + 一次清空动作）；
@@ -834,6 +848,14 @@ public class AutoService extends AccessibilityService {
         }
         sleep(120);
         String after = focusedText();
+        if (after != null && after.length() > 0 && isMaskedText(after)) {
+            // 有些游戏登录框（天途等）把账号框也做成掩码，回读只能看到 •••••••；
+            // 此时不能用「包含原值」判断，否则必然误判并白跑一次清空重填。
+            if (after.length() == value.length()) {
+                return ok;
+            }
+            // 掩码长度对不上，才继续走真实校验
+        }
         if (after != null) {
             boolean good = isPass ? after.length() > 0 : after.contains(value);
             if (!good) {
