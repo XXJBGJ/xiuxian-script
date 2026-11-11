@@ -225,9 +225,9 @@ public class FloatWindow {
                                 dragging = true;
                             }
                             if (dragging && lp != null) {
-                                // 关键修正：底部对齐时 y 轴与手指方向相反，必须取反
+                                // 顶部对齐后，位移方向与手指完全一致
                                 lp.x = startX + (int) dx;
-                                lp.y = startY - (int) dy;
+                                lp.y = startY + (int) dy;
                                 clampAndApply();
                             }
                             return true;
@@ -267,9 +267,11 @@ public class FloatWindow {
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                         | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
                 android.graphics.PixelFormat.TRANSLUCENT);
-        lp.gravity = Gravity.BOTTOM | Gravity.LEFT;
-        lp.x = dpf(8);
-        lp.y = dpf(24);
+        // 改成顶部对齐：y 越大越往下，手指往下拖窗口就往下走，
+        // 不再需要用「底部对齐 + y 取反」这种容易搞反的写法。
+        lp.gravity = Gravity.TOP | Gravity.START;
+        lp.x = dpf(6);
+        lp.y = dpf(30);
 
         root = box;
 
