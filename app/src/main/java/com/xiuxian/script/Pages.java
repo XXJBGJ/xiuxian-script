@@ -950,7 +950,7 @@ public class Pages {
         for (int i = 0; i < parent.children.size(); i++) {
             Node c = parent.children.get(i);
             if (c.isParent()) {
-                flushGrid(ctx, body, roots, sp, cf, leaves, depth, readOnly);
+                flushGrid(ctx, body, pageBox, roots, sp, cf, leaves, depth, readOnly);
                 leaves.clear();
                 body.addView(buildRow(ctx, pageBox, roots, sp, cf, c, depth, false, readOnly));
                 addChildren(ctx, body, pageBox, roots, sp, cf, c, depth + 1, readOnly);
@@ -958,12 +958,12 @@ public class Pages {
                 leaves.add(c);
             }
         }
-        flushGrid(ctx, body, roots, sp, cf, leaves, depth, readOnly);
+        flushGrid(ctx, body, pageBox, roots, sp, cf, leaves, depth, readOnly);
         leaves.clear();
     }
 
     /** 把攒下的叶子项按每行 4 个铺成格子；不足 4 个补空位，保证列对齐 */
-    private static void flushGrid(Context ctx, LinearLayout body,
+    private static void flushGrid(Context ctx, LinearLayout body, final LinearLayout pageBox,
                                   final List<Node> roots, final SharedPreferences sp,
                                   final SharedPreferences cf, final List<Node> leaves,
                                   int depth, final boolean readOnly) {
