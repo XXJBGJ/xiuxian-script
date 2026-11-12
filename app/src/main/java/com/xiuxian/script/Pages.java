@@ -920,6 +920,9 @@ public class Pages {
 
     // ======================= 任务树渲染 =======================
 
+    /** 网格一行放几个任务 */
+    private static final int GRID_COLS = 4;
+
     /** 一个区（凡间 / 上界）：标题行 + 下面所有子模块 */
     private static View buildSection(Context ctx, final LinearLayout pageBox,
                                      final List<Node> roots, final SharedPreferences sp,
@@ -927,29 +930,106 @@ public class Pages {
                                      int depth, final boolean readOnly) {
         LinearLayout card = card(ctx);
         card.addView(buildRow(ctx, pageBox, roots, sp, cf, section, depth, true, readOnly));
-        for (int i = 0; i < section.children.size(); i++) {
-            card.addView(buildNodeView(ctx, pageBox, roots, sp, cf,
-                    section.children.get(i), depth + 1, readOnly));
-        }
+        LinearLayout body = new LinearLayout(ctx);
+        body.setOrientation(LinearLayout.VERTICAL);
+        addChildren(ctx, body, pageBox, roots, sp, cf, section, depth + 1, readOnly);
+        card.addView(body);
         return card;
     }
 
-    /** 递归渲染一个节点：自己一行，有子项就往里缩进 */
-    private static View buildNodeView(Context ctx, final LinearLayout pageBox,
-                                      final List<Node> roots, final SharedPreferences sp,
-                                      final SharedPreferences cf, final Node n,
-                                      int depth, final boolean readOnly) {
-        if (!n.isParent()) {
-            return buildRow(ctx, pageBox, roots, sp, cf, n, depth, false, readOnly);
+    /**
+     * 排布一个父项下面的所有子项：
+     * 连续的叶子项攒成一组，按每行 4 个铺开（这样行书短、上下对齐）；
+     * 遇到还有下级的父项就先把它自己的行插进去，再往下递归。
+     */
+    private static void addChildren(Context ctx, LinearLayout body, final LinearLayout pageBox,
+                                    final List<Node> roots, final SharedPreferences sp,
+                                    final SharedPreferences cf, final Node parent,
+                                    int depth, final boolean readOnly) {
+        List<Node> leaves = new ArrayList<Node>();
+        for (int i = 0; i < parent.children.size(); i++) {
+            Node c = parent.children.get(i);
+            if (c.isParent()) {
+                flushGrid(ctx, body, roots, sp, cf, leaves, depth, readOnly);
+                leaves.clear();
+                body.addView(buildRow(ctx, pageBox, roots, sp, cf, c, depth, false, readOnly));
+                addChildren(ctx, body, pageBox, roots, sp, cf, c, depth + 1, readOnly);
+            } else {
+                leaves.add(c);
+            }
         }
-        LinearLayout box = new LinearLayout(ctx);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.addView(buildRow(ctx, pageBox, roots, sp, cf, n, depth, false, readOnly));
-        for (int i = 0; i < n.children.size(); i++) {
-            box.addView(buildNodeView(ctx, pageBox, roots, sp, cf,
-                    n.children.get(i), depth + 1, readOnly));
+        flushGrid(ctx, body, roots, sp, cf, leaves, depth, readOnly);
+        leaves.clear();
+    }
+
+    /** 把攒下的叶子项按每行 4 个铺成格子；不足 4 个补空位，保证列对齐 */
+    private static void flushGrid(Context ctx, LinearLayout body,
+                                  final List<Node> roots, final SharedPreferences sp,
+                                  final SharedPreferences cf, final List<Node> leaves,
+                                  int depth, final boolean readOnly) {
+        if (leaves.isEmpty()) {
+            return;
         }
-        return box;
+        for (int start = 0; start < leaves.size(); start += GRID_COLS) {
+            LinearLayout line = new LinearLayout(ctx);
+            line.setOrientation(LinearLayout.HORIZONTAL);
+            line.setGravity(Gravity.CENTER_VERTICAL);
+            line.setPadding(dp(ctx, 4 + depth * 10), dp(ctx, 1), dp(ctx, 4), dp(ctx, 1));
+
+            for (int k = 0; k < GRID_COLS; k++) {
+                int idx = start + k;
+                if (idx < leaves.size()) {
+                    line.addView(buildCell(ctx, pageBox, roots, sp, cf, leaves.get(idx), readOnly));
+                } else {
+                    View gap = new View(ctx);
+                    line.addView(gap, new LinearLayout.LayoutParams(0, 1, 1f));
+                }
+            }
+            body.addView(line);
+        }
+    }
+
+    /** 网格里的一小格：勾选框 + 名称，宽度四等分，纵向与邻格对齐 */
+    private static View buildCell(Context ctx, final LinearLayout pageBox,
+                                  final List<Node> roots, final SharedPreferences sp,
+                                  final SharedPreferences cf, final Node n,
+                                  final boolean readOnly) {
+        LinearLayout cell = new LinearLayout(ctx);
+        cell.setOrientation(LinearLayout.HORIZONTAL);
+        cell.setGravity(Gravity.CENTER_VERTICAL);
+        cell.setClickable(true);
+        cell.setPadding(dp(ctx, 2), dp(ctx, 5), dp(ctx, 2), dp(ctx, 5));
+        cell.setLayoutParams(new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        cell.addView(checkBox(ctx, n.checked, false));
+
+        TextView label = new TextView(ctx);
+        label.setText(n.name);
+        label.setTextSize(12);
+        label.setSingleLine(true);
+        label.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        label.setTextColor(Color.parseColor(n.checked ? COLOR_TEXT : "#FF3A3A3A"));
+        label.setPadding(dp(ctx, 5), 0, 0, 0);
+        cell.addView(label, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        cell.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (readOnly) {
+                    toast(ctx, "当前是已保存的配置，勾选已锁定；点「自定义配置」可自由勾选");
+                    return;
+                }
+                setChecked(n, !n.checked);
+                for (int i = 0; i < roots.size(); i++) {
+                    normalize(roots.get(i));
+                }
+                saveCustom(sp, roots);
+                renderDaily(ctx, pageBox);
+            }
+        });
+        return cell;
     }
 
     /** 一行：勾选框 + 名称 */
