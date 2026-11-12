@@ -34,12 +34,12 @@ import java.util.List;
 public class Installers {
 
     /**
-     * 版本库所在仓库：刻意指向公开的 xiuxian-apk。
-     * 源码仓库 xiuxian-script 保持私有，任何人不登录都看不到；
-     * 只有这个只放安装包的仓库对外公开，所以安装包库对所有人可读可下载。
+     * 版本库所在仓库：指向 xiuxian-script 的 Releases。
+     * 该仓库已设为公开，因此安装包库对所有人可读可下载；
+     * 每次构建产出的 APK 会自动出现在这里，无需手动转存。
      */
     public static final String OWNER = "XXJBGJ";
-    public static final String REPO = "xiuxian-apk";
+    public static final String REPO = "xiuxian-script";
 
     /**
      * 线上文件名关键字 → { 中文显示名, 版本, 对应游戏包名 }
