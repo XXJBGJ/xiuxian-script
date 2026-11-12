@@ -33,9 +33,13 @@ import java.util.List;
  */
 public class Installers {
 
-    /** 版本库所在仓库 */
+    /**
+     * 版本库所在仓库：刻意指向公开的 xiuxian-apk。
+     * 源码仓库 xiuxian-script 保持私有，任何人不登录都看不到；
+     * 只有这个只放安装包的仓库对外公开，所以安装包库对所有人可读可下载。
+     */
     public static final String OWNER = "XXJBGJ";
-    public static final String REPO = "xiuxian-script";
+    public static final String REPO = "xiuxian-apk";
 
     /**
      * 线上文件名关键字 → { 中文显示名, 版本, 对应游戏包名 }
@@ -244,11 +248,8 @@ public class Installers {
                                 if (nm.toLowerCase().indexOf(".apk") < 0) {
                                     continue;
                                 }
-                                // 关键过滤：只留 MAP 里登记的游戏安装包，
-                                // 脚本自身的构建产物（xiuxian-script.apk / default.apk）不显示
-                                if (!isGameInstaller(nm)) {
-                                    continue;
-                                }
+                                // 公开安装包库里的 APK 全部列出：
+                                // 登记的走 MAP 中文名，未登记的按文件名整理成可读名
                                 Item it = new Item();
                                 it.tag = tag;
                                 it.title = title;
@@ -259,11 +260,16 @@ public class Installers {
                                 out.add(it);
                             }
                         }
-                        // 按 MAP 顺序排好，同一渠道只保留第一份（Releases 按时间倒序，第一份即最新）
+                        // 登记的安装包按 MAP 顺序排在前，其余按名称排后面
                         java.util.Collections.sort(out, new java.util.Comparator<Item>() {
                             @Override
                             public int compare(Item a, Item b) {
-                                return mapIndex(a.name) - mapIndex(b.name);
+                                int ia = mapIndex(a.name);
+                                int ib = mapIndex(b.name);
+                                if (ia != ib) {
+                                    return ia - ib;
+                                }
+                                return a.label().compareTo(b.label());
                             }
                         });
                         List<Item> uniq = new ArrayList<Item>();
