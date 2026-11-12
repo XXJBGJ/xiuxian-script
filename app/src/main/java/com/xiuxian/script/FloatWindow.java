@@ -278,6 +278,10 @@ public class FloatWindow {
         box.post(new Runnable() {
             @Override
             public void run() {
+                if (!placed) {
+                    placed = true;
+                    placeDefault();
+                }
                 clampAndApply();
                 refresh();
             }
@@ -353,7 +357,10 @@ public class FloatWindow {
         }
     }
 
-    /** 位置钳制：任何方向都不允许把浮窗推出屏幕 */
+    /** 首次布局完成后摆到默认位置（顶部居中偏左） */
+    private boolean placed = false;
+
+    /** 位置钳制：横向不出屏，纵向允许越过屏幕顶部 */
     private void clampAndApply() {
         if (root == null || lp == null || !showing) {
             return;
@@ -376,8 +383,13 @@ public class FloatWindow {
             if (lp.x > maxX) {
                 lp.x = maxX;
             }
-            if (lp.y < 0) {
-                lp.y = 0;
+            // 允许整体上移越过屏幕顶部，只保留下沿露在外面
+            int minY = -(h - dpf(20));
+            if (minY > 0) {
+                minY = 0;
+            }
+            if (lp.y < minY) {
+                lp.y = minY;
             }
             if (lp.y > maxY) {
                 lp.y = maxY;
@@ -400,6 +412,24 @@ public class FloatWindow {
             }
             applyLook(root);
             clampAndApply();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 默认位置：屏幕顶部，水平居中后略微偏左，避免和右上角悬浮球重叠 */
+    private void placeDefault() {
+        if (root == null || lp == null) {
+            return;
+        }
+        try {
+            int[] wh = screen();
+            int w = root.getWidth() > 0 ? root.getWidth() : dpf(130);
+            int h = root.getHeight() > 0 ? root.getHeight() : dpf(60);
+            int centerX = (wh[0] - w) / 2;
+            int offset = Math.max(dpf(8), (int) (wh[0] * 0.10f));
+            lp.x = Math.max(0, Math.min(Math.max(0, wh[0] - w), centerX - offset));
+            int top = Math.max(dpf(24), (int) (wh[1] * 0.06f));
+            lp.y = top > Math.max(0, wh[1] - h) ? Math.max(0, wh[1] - h) : top;
         } catch (Throwable ignored) {
         }
     }
