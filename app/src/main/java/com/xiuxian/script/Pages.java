@@ -1064,25 +1064,24 @@ public class Pages {
                                     final List<Node> roots, final SharedPreferences sp,
                                     final SharedPreferences cf, final Node parent,
                                     int depth, final boolean readOnly) {
-        boolean allLeaves = true;
-        for (int i = 0; i < parent.children.size(); i++) {
-            if (parent.children.get(i).isParent()) {
-                allLeaves = false;
-                break;
-            }
-        }
-
-        if (allLeaves) {
-            flushGrid(ctx, body, pageBox, roots, sp, cf, parent.children, depth, readOnly);
-            return;
-        }
-
+        // 同一层里，叶子任务按名字长度排成网格（2字4个/3字3个/4~5字2个/≥6字1个），
+        // 遇到父项就先落网格再单独占一行，避免每个叶子各占一整行把页面拉得很长。
+        List<Node> buf = new ArrayList<Node>();
         for (int i = 0; i < parent.children.size(); i++) {
             Node c = parent.children.get(i);
-            body.addView(buildRow(ctx, pageBox, roots, sp, cf, c, depth, false, readOnly));
             if (c.isParent()) {
+                if (!buf.isEmpty()) {
+                    flushGrid(ctx, body, pageBox, roots, sp, cf, buf, depth, readOnly);
+                    buf = new ArrayList<Node>();
+                }
+                body.addView(buildRow(ctx, pageBox, roots, sp, cf, c, depth, false, readOnly));
                 addChildren(ctx, body, pageBox, roots, sp, cf, c, depth + 1, readOnly);
+            } else {
+                buf.add(c);
             }
+        }
+        if (!buf.isEmpty()) {
+            flushGrid(ctx, body, pageBox, roots, sp, cf, buf, depth, readOnly);
         }
     }
 
@@ -1111,7 +1110,7 @@ public class Pages {
             LinearLayout line = new LinearLayout(ctx);
             line.setOrientation(LinearLayout.HORIZONTAL);
             line.setGravity(Gravity.CENTER_VERTICAL);
-            line.setPadding(dp(ctx, 4 + depth * 10), dp(ctx, 1), dp(ctx, 4), dp(ctx, 1));
+            line.setPadding(dp(ctx, 4 + depth * 10), 0, dp(ctx, 4), dp(ctx, 2));
 
             for (int k = 0; k < cols; k++) {
                 int idx = start + k;
@@ -1137,7 +1136,7 @@ public class Pages {
         cell.setOrientation(LinearLayout.HORIZONTAL);
         cell.setGravity(Gravity.CENTER_VERTICAL);
         cell.setClickable(true);
-        cell.setPadding(dp(ctx, 1), dp(ctx, 3), dp(ctx, 1), dp(ctx, 3));
+        cell.setPadding(dp(ctx, 1), dp(ctx, 2), dp(ctx, 1), dp(ctx, 2));
         cell.setLayoutParams(new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
@@ -1181,7 +1180,7 @@ public class Pages {
         LinearLayout row = new LinearLayout(ctx);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(ctx, 4 + depth * 12), dp(ctx, 5), dp(ctx, 4), dp(ctx, 5));
+        row.setPadding(dp(ctx, 4 + depth * 12), dp(ctx, 4), dp(ctx, 4), dp(ctx, 4));
         row.setClickable(true);
 
         if (isSectionTitle) {
