@@ -1024,28 +1024,37 @@ public class Pages {
     }
 
     /**
-     * 排布一个父项下面的所有子项：
-     * 连续的叶子项攒成一组，按每行 4 个铺开（这样行书短、上下对齐）；
-     * 遇到还有下级的父项就先把它自己的行插进去，再往下递归。
+     * 排布一个父项下面的所有子项。
+     *
+     * 只有「这一层全是叶子」时才铺成每行 4 个的格子；
+     * 只要这一层里混着有下级的项，就全部按整行渲染。
+     * 否则像「天庭」「刑天战场」这种没有子项的同级项会被塞进
+     * 上一项的格子区，看起来像是别人的子项。
      */
     private static void addChildren(Context ctx, LinearLayout body, final LinearLayout pageBox,
                                     final List<Node> roots, final SharedPreferences sp,
                                     final SharedPreferences cf, final Node parent,
                                     int depth, final boolean readOnly) {
-        List<Node> leaves = new ArrayList<Node>();
+        boolean allLeaves = true;
         for (int i = 0; i < parent.children.size(); i++) {
-            Node c = parent.children.get(i);
-            if (c.isParent()) {
-                flushGrid(ctx, body, pageBox, roots, sp, cf, leaves, depth, readOnly);
-                leaves.clear();
-                body.addView(buildRow(ctx, pageBox, roots, sp, cf, c, depth, false, readOnly));
-                addChildren(ctx, body, pageBox, roots, sp, cf, c, depth + 1, readOnly);
-            } else {
-                leaves.add(c);
+            if (parent.children.get(i).isParent()) {
+                allLeaves = false;
+                break;
             }
         }
-        flushGrid(ctx, body, pageBox, roots, sp, cf, leaves, depth, readOnly);
-        leaves.clear();
+
+        if (allLeaves) {
+            flushGrid(ctx, body, pageBox, roots, sp, cf, parent.children, depth, readOnly);
+            return;
+        }
+
+        for (int i = 0; i < parent.children.size(); i++) {
+            Node c = parent.children.get(i);
+            body.addView(buildRow(ctx, pageBox, roots, sp, cf, c, depth, false, readOnly));
+            if (c.isParent()) {
+                addChildren(ctx, body, pageBox, roots, sp, cf, c, depth + 1, readOnly);
+            }
+        }
     }
 
     /** 把攒下的叶子项按每行 4 个铺成格子；不足 4 个补空位，保证列对齐 */
@@ -1084,19 +1093,21 @@ public class Pages {
         cell.setOrientation(LinearLayout.HORIZONTAL);
         cell.setGravity(Gravity.CENTER_VERTICAL);
         cell.setClickable(true);
-        cell.setPadding(dp(ctx, 2), dp(ctx, 5), dp(ctx, 2), dp(ctx, 5));
+        cell.setPadding(dp(ctx, 1), dp(ctx, 3), dp(ctx, 1), dp(ctx, 3));
         cell.setLayoutParams(new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
-        cell.addView(checkBox(ctx, n.checked, false));
+        cell.addView(checkBoxSized(ctx, n.checked, false, 15));
 
         TextView label = new TextView(ctx);
         label.setText(n.name);
-        label.setTextSize(12);
+        // 四列格子最窄，字号和间距都要收紧，否则「仙界灵宠」「掌门大厅」
+        // 这种四字任务名会被截成「仙界灵…」，看不出是哪一项。
+        label.setTextSize(10.5f);
         label.setSingleLine(true);
         label.setEllipsize(android.text.TextUtils.TruncateAt.END);
         label.setTextColor(Color.parseColor(n.checked ? COLOR_TEXT : "#FF3A3A3A"));
-        label.setPadding(dp(ctx, 5), 0, 0, 0);
+        label.setPadding(dp(ctx, 3), 0, 0, 0);
         cell.addView(label, new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
@@ -1182,9 +1193,14 @@ public class Pages {
 
     /** 方框勾选：勾上显示 √，没勾是空白框；半勾用灰色 √ */
     private static TextView checkBox(Context ctx, boolean checked, boolean partial) {
+        return checkBoxSized(ctx, checked, partial, 18);
+    }
+
+    /** 同上，但可以指定边长（四列格子空间紧，用 15 更合适） */
+    private static TextView checkBoxSized(Context ctx, boolean checked, boolean partial, int size) {
         TextView v = new TextView(ctx);
         v.setText(checked ? "√" : "");
-        v.setTextSize(12);
+        v.setTextSize(size <= 15 ? 11 : 12);
         v.setGravity(Gravity.CENTER);
         v.setTextColor(Color.parseColor(partial ? COLOR_MUTED : COLOR_OK));
         v.setTypeface(Typeface.DEFAULT_BOLD);
@@ -1197,7 +1213,7 @@ public class Pages {
         d.setStroke(stroke, Color.parseColor(checked ? COLOR_OK : "#FFB8BDC4"));
         v.setBackgroundDrawable(d);
 
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(ctx, 18), dp(ctx, 18));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(ctx, size), dp(ctx, size));
         v.setLayoutParams(lp);
         return v;
     }
