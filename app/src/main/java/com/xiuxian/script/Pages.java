@@ -9,7 +9,6 @@ import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.view.Gravity;
 import android.view.View;
-import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -515,13 +514,15 @@ public class Pages {
 
         String[] names = new String[]{"我的配置", "推荐配置", "自定义配置", "保存配置"};
         for (int i = 0; i < names.length; i++) {
-            Button b = new Button(ctx);
+            // 用 TextView 承载按钮，避免 Material 主题给 Button 加背景着色后
+            // 把自定义背景（高亮色）盖掉，导致看不出哪个配置正在生效
+            TextView b = new TextView(ctx);
             b.setText(names[i]);
             b.setTextSize(12.5f);
-            b.setAllCaps(false);
-            b.setMinWidth(0);
-            b.setMinimumWidth(0);
-            b.setPadding(0, dp(ctx, 6), 0, dp(ctx, 6));
+            b.setGravity(Gravity.CENTER);
+            b.setClickable(true);
+            b.setFocusable(true);
+            b.setPadding(0, dp(ctx, 8), 0, dp(ctx, 8));
 
             boolean on = (i == 0 && MODE_MINE.equals(mode))
                     || (i == 1 && MODE_REC.equals(mode))
