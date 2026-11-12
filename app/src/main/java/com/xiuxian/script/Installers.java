@@ -208,19 +208,26 @@ public class Installers {
                 String err = null;
                 HttpURLConnection conn = null;
                 try {
-                    String api = "https://api.github.com/repos/" + OWNER + "/" + REPO + "/releases";
-                    URL u = new URL(api);
-                    conn = (HttpURLConnection) u.openConnection();
-                    conn.setConnectTimeout(12000);
-                    conn.setReadTimeout(15000);
-                    conn.setRequestProperty("Accept", "application/vnd.github+json");
-                    conn.setRequestProperty("User-Agent", "xiuxian-script");
-                    int code = conn.getResponseCode();
-                    if (code == 404) {
-                        err = "仓库不存在或为私有（需登录才能读取）";
-                    } else if (code != 200) {
-                        err = "GitHub 返回 " + code;
-                    } else {
+                    // Releases 接口默认只返回最新 30 条；
+                    // 真正的游戏安装包在最早的 games-backup 里（排序后第 51 个），
+                    // 不翻页就永远读不到，只会看到脚本自身的构建包。
+                    for (int page = 1; page <= 6; page++) {
+                        String api = "https://api.github.com/repos/" + OWNER + "/" + REPO
+                                + "/releases?per_page=100&page=" + page;
+                        URL u = new URL(api);
+                        conn = (HttpURLConnection) u.openConnection();
+                        conn.setConnectTimeout(12000);
+                        conn.setReadTimeout(15000);
+                        conn.setRequestProperty("Accept", "application/vnd.github+json");
+                        conn.setRequestProperty("User-Agent", "xiuxian-script");
+                        int code = conn.getResponseCode();
+                        if (code == 404) {
+                            err = "仓库不存在或为私有（需登录才能读取）";
+                            break;
+                        } else if (code != 200) {
+                            err = "GitHub 返回 " + code;
+                            break;
+                        }
                         InputStream is = conn.getInputStream();
                         BufferedReader br = new BufferedReader(new InputStreamReader(is, "UTF-8"));
                         StringBuilder sb = new StringBuilder();
@@ -229,8 +236,11 @@ public class Installers {
                             sb.append(line);
                         }
                         br.close();
+                        conn.disconnect();
+                        conn = null;
                         JSONArray arr = new JSONArray(sb.toString());
-                        for (int i = 0; i < arr.length(); i++) {
+                        int len = arr.length();
+                        for (int i = 0; i < len; i++) {
                             JSONObject rel = arr.getJSONObject(i);
                             String tag = rel.optString("tag_name", "");
                             String title = rel.optString("name", "");
@@ -248,8 +258,13 @@ public class Installers {
                                 if (nm.toLowerCase().indexOf(".apk") < 0) {
                                     continue;
                                 }
-                                // 公开安装包库里的 APK 全部列出：
-                                // 登记的走 MAP 中文名，未登记的按文件名整理成可读名
+                                // 只列出 MAP 里登记过的游戏安装包；
+                                // 脚本自身的历次构建产物（xiuxian-script.apk 等）
+                                // 不属于游戏，必须在这里挡掉，
+                                // 否则几十个同名英文包会被折叠成一条垃圾条目。
+                                if (!isGameInstaller(nm)) {
+                                    continue;
+                                }
                                 Item it = new Item();
                                 it.tag = tag;
                                 it.title = title;
@@ -260,27 +275,30 @@ public class Installers {
                                 out.add(it);
                             }
                         }
-                        // 登记的安装包按 MAP 顺序排在前，其余按名称排后面
-                        java.util.Collections.sort(out, new java.util.Comparator<Item>() {
-                            @Override
-                            public int compare(Item a, Item b) {
-                                int ia = mapIndex(a.name);
-                                int ib = mapIndex(b.name);
-                                if (ia != ib) {
-                                    return ia - ib;
-                                }
-                                return a.label().compareTo(b.label());
-                            }
-                        });
-                        List<Item> uniq = new ArrayList<Item>();
-                        java.util.HashSet<String> seen = new java.util.HashSet<String>();
-                        for (Item it : out) {
-                            if (seen.add(it.label())) {
-                                uniq.add(it);
-                            }
+                        if (len < 100) {
+                            break;
                         }
-                        out = uniq;
                     }
+                    // 登记的安装包按 MAP 顺序排在前，其余按名称排后面
+                    java.util.Collections.sort(out, new java.util.Comparator<Item>() {
+                        @Override
+                        public int compare(Item a, Item b) {
+                            int ia = mapIndex(a.name);
+                            int ib = mapIndex(b.name);
+                            if (ia != ib) {
+                                return ia - ib;
+                            }
+                            return a.label().compareTo(b.label());
+                        }
+                    });
+                    List<Item> uniq = new ArrayList<Item>();
+                    java.util.HashSet<String> seen = new java.util.HashSet<String>();
+                    for (Item it : out) {
+                        if (seen.add(it.label())) {
+                            uniq.add(it);
+                        }
+                    }
+                    out = uniq;
                 } catch (Throwable t) {
                     err = "网络失败: " + t.getClass().getSimpleName();
                 } finally {
