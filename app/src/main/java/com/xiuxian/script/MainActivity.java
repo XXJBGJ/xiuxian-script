@@ -373,7 +373,17 @@ public class MainActivity extends Activity {
 
         // 游戏图标：已安装就读真实图标，没装则用彩色圆标兜底
         ImageView iv = new ImageView(this);
-        android.graphics.drawable.Drawable d = Installers.icon(this, it.pkg());
+        // 优先用内置的游戏图标（已按渠道包内真实图标抽出来打进 APK），
+        // 这样没装游戏也能看到牌子；仍取不到才退回彩色圆标。
+        android.graphics.drawable.Drawable d = null;
+        android.graphics.Bitmap bm = BundledGameIcons.get(
+                BundledGameIcons.keyFor(it.label(), it.pkg(), it.name));
+        if (bm != null) {
+            d = new android.graphics.drawable.BitmapDrawable(getResources(), bm);
+        }
+        if (d == null) {
+            d = Installers.icon(this, it.pkg());
+        }
         if (d != null) {
             iv.setImageDrawable(d);
         } else {
