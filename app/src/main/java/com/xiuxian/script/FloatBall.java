@@ -180,7 +180,7 @@ public class FloatBall {
             if (on) {
                 if (spin == null) {
                     spin = ObjectAnimator.ofFloat(ivIcon, "rotation", 0f, 360f);
-                    spin.setDuration(1200L);
+                    spin.setDuration(2400L);
                     spin.setRepeatCount(ObjectAnimator.INFINITE);
                     spin.setInterpolator(new LinearInterpolator());
                 }
