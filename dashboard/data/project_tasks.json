@@ -1,0 +1,19 @@
+{
+  "updated": "2026-11-12",
+  "tasks": [
+    { "id": "06", "module": "凡间", "title": "06 演武（条件判断版）", "status": "done", "note": "22 步条件版已真机跑通，兑换段闭环；斗法段战斗弹窗模板待补" },
+    { "id": "04", "module": "凡间", "title": "04 坊市（条件判断版）", "status": "pending", "note": "骨架与可达锚点已回填，待真机闭环；聚宝盆/争夺胜负模板待补" },
+    { "id": "05", "module": "凡间", "title": "05 行囊（条件判断版）", "status": "pending", "note": "未真机闭环，单件出售段留手动" },
+    { "id": "07", "module": "凡间", "title": "07 慕仙境（条件判断版）", "status": "pending", "note": "待复验二次膜拜/瞻仰刷新分支与获得时间弹窗" },
+    { "id": "08", "module": "凡间", "title": "08 宗门（条件判断版）", "status": "pending", "note": "3 类未触发界面模板待补：确定/开始练功/关闭传功室" },
+    { "id": "09", "module": "凡间", "title": "09 修炼（条件判断版）", "status": "pending", "note": "8 类弹窗模板待触发后补；纳气点位顺序未核" },
+    { "id": "10", "module": "凡间", "title": "10 吐纳（条件判断版）", "status": "pending", "note": "待真机复核闭环" },
+    { "id": "11", "module": "仙盟", "title": "11 进入仙盟（条件判断版）", "status": "pending", "note": "骨架已落地，模板待真机抓" },
+    { "id": "12", "module": "仙盟", "title": "12 建设（条件判断版）", "status": "pending", "note": "骨架已落地，模板待真机抓" },
+    { "id": "13", "module": "仙盟", "title": "13 排行榜（条件判断版）", "status": "pending", "note": "骨架已落地，模板待真机抓" },
+    { "id": "14", "module": "仙盟", "title": "14 仙盟事务（条件判断版）", "status": "pending", "note": "7 步参数已读全，7 个占位模板待抓" },
+    { "id": "15", "module": "仙盟", "title": "15 宴会（条件判断版）", "status": "pending", "note": "4 步参数已读全，4 个占位模板待抓" },
+    { "id": "16", "module": "仙盟", "title": "16 除魔（条件判断版）", "status": "pending", "note": "8 步参数已读全，7 个占位模板待抓" },
+    { "id": "17", "module": "仙盟", "title": "17 天宫幻境（条件判断版）", "status": "pending", "note": "8 步参数已读全，5 个占位模板待抓；排位在事务与宴会之间" }
+  ]
+}
