@@ -32,6 +32,7 @@ public class MainActivity extends Activity {
     private TextView tvStatus;
     private TextView tvLog;
     private TextView tvGame;
+    private TextView tvGameVer;
     private Spinner spGame;
     private ScrollView logScroll;
     private String logBuffer = "";
@@ -51,38 +52,22 @@ public class MainActivity extends Activity {
         logScroll = (ScrollView) findViewById(R.id.log_scroll);
         tvLog.setMovementMethod(new ScrollingMovementMethod());
 
-        // ---- 游戏选择：换皮游戏靠包名区分，这里决定本次跑哪一个 ----
+        // ---- 游戏信息卡：显示当前游戏 + 版本，点整张卡片即可换游戏/扫描 ----
         tvGame = (TextView) findViewById(R.id.tv_game);
-        spGame = (Spinner) findViewById(R.id.sp_game);
-        ArrayAdapter<String> gameAdapter = new ArrayAdapter<String>(this,
-                android.R.layout.simple_spinner_item, Games.labels(this));
-        gameAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        spGame.setAdapter(gameAdapter);
-        spGame.setSelection(Games.selectedIndex(this));
-        spGame.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override
-            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                Games.setSelectedIndex(MainActivity.this, position);
-                refreshGameLine();
-                Logger.i("已切换游戏: " + Games.name(position) + " -> " + Games.pkg(position));
-            }
-
-            @Override
-            public void onNothingSelected(AdapterView<?> parent) {
-            }
-        });
+        tvGameVer = (TextView) findViewById(R.id.tv_game_ver);
+        View cardGame = findViewById(R.id.card_game);
+        if (cardGame != null) {
+            cardGame.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    showGamePicker();
+                }
+            });
+        }
         refreshGameLine();
 
         // 四个标签页：脚本 / 日常 / 仙榜 / 活动
         setupTabs();
-
-        Button btnScan = (Button) findViewById(R.id.btn_scan);
-        btnScan.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                showScanDialog();
-            }
-        });
 
         Button btnLib = (Button) findViewById(R.id.btn_library);
         btnLib.setOnClickListener(new View.OnClickListener() {
@@ -109,44 +94,17 @@ public class MainActivity extends Activity {
             }
         });
 
-        Button btnService = (Button) findViewById(R.id.btn_service);
-        Button btnOverlay = (Button) findViewById(R.id.btn_overlay);
-        Button btnFloat = (Button) findViewById(R.id.btn_float);
+        Button btnPerm = (Button) findViewById(R.id.btn_perm);
         Button btnConfig = (Button) findViewById(R.id.btn_config);
         Button btnStart = (Button) findViewById(R.id.btn_start);
         Button btnStop = (Button) findViewById(R.id.btn_stop);
         Button btnClear = (Button) findViewById(R.id.btn_clearlog);
         Button btnLogCopy = (Button) findViewById(R.id.btn_log_copy);
-        Button btnLogExport = (Button) findViewById(R.id.btn_log_export);
 
-        btnService.setOnClickListener(new View.OnClickListener() {
+        btnPerm.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                openAccessibilitySettings();
-            }
-        });
-
-        btnOverlay.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                requestOverlayPermission();
-            }
-        });
-
-        btnFloat.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                if (!canDrawOverlay()) {
-                    toast("请先授予悬浮窗权限");
-                    requestOverlayPermission();
-                    return;
-                }
-                FloatWindow fw = FloatWindow.get(MainActivity.this);
-                if (fw.isShowing()) {
-                    fw.hide();
-                } else {
-                    fw.show();
-                }
+                showPermissionPanel();
             }
         });
 
@@ -203,14 +161,6 @@ public class MainActivity extends Activity {
             }
         });
 
-        // 导出日志：存到手机「下载」目录，文件管理器里能直接看到
-        btnLogExport.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                exportLogToDownloads();
-            }
-        });
-
         // 把已有日志一次性铺上
         reloadLogs();
         refreshStatus();
@@ -257,6 +207,17 @@ public class MainActivity extends Activity {
             }
         } catch (Throwable t) {
             Logger.e("悬浮球显示失败: " + t);
+        }
+        // 从授权页返回：无障碍功能/悬浮窗 一键修复流程继续
+        if (permFlow) {
+            boolean accOk = isAccessibilityOn() || AutoService.get() != null;
+            boolean ovlOk = canDrawOverlay();
+            if (accOk && ovlOk) {
+                continuePermFlow();
+            } else if ("acc".equals(pendingPerm) && accOk && !ovlOk) {
+                pendingPerm = "overlay";
+                requestOverlayPermission();
+            }
         }
         // 从授权页返回：权限齐了就自动接着启动，中途还需补另一个权限时继续跳
         if (pendingStart) {
@@ -556,19 +517,8 @@ public class MainActivity extends Activity {
                 .show();
     }
 
-    /** 重新灌一次下拉数据（扫描保存后调用） */
+    /** 选择游戏后刷新界面上的游戏信息卡（原来是灌下拉框的地方） */
     private void reloadGameSpinner() {
-        if (spGame == null) {
-            return;
-        }
-        ArrayAdapter<String> a = new ArrayAdapter<String>(this,
-                android.R.layout.simple_spinner_item, Games.labels(this));
-        a.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        spGame.setAdapter(a);
-        int idx = Games.selectedIndex(this);
-        if (idx >= 0 && idx < Games.count()) {
-            spGame.setSelection(idx);
-        }
         refreshGameLine();
     }
 
@@ -577,12 +527,165 @@ public class MainActivity extends Activity {
             return;
         }
         int i = Games.selectedIndex(this);
+        if (i < 0 || i >= Games.count()) {
+            tvGame.setText("当前游戏: --");
+            if (tvGameVer != null) {
+                tvGameVer.setText("点这里扫描并选择游戏");
+            }
+            return;
+        }
         boolean ok = Games.isInstalled(this, i);
         String s = "当前游戏: " + Games.name(i) + "  (" + Games.pkg(i) + ")  "
-                + (ok ? "[已安装]" : "[未安装，请先装到雷电里]");
+                + (ok ? "[已安装]" : "[未安装]");
         tvGame.setText(s);
-        if (tvGame != null) {
-            tvGame.setTextColor(ok ? 0xFF1B7A1B : 0xFFB00020);
+        tvGame.setTextColor(ok ? 0xFF1B7A1B : 0xFFB00020);
+        if (tvGameVer != null) {
+            String v = gameVersion(Games.pkg(i));
+            String note = Games.note(i);
+            String line = Games.name(i) + (v.isEmpty() ? "" : ("  ·  " + v));
+            if (note != null && note.length() > 0) {
+                line = line + "  " + note;
+            }
+            tvGameVer.setText(line);
+        }
+    }
+
+    /** 读已安装游戏的版本号，没装返回空 */
+    private String gameVersion(String pkg) {
+        try {
+            android.content.pm.PackageInfo pi = getPackageManager().getPackageInfo(pkg, 0);
+            return pi.versionName == null ? "" : pi.versionName;
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    // ================= 选游戏（合并了原来单独的扫描窗口） =================
+
+    /**
+     * 点游戏信息卡弹出：列出当前游戏，选中即可切换；
+     * 最后一项「扫描已安装应用」就地进入扫描勾选，扫完回到这里。
+     */
+    private void showGamePicker() {
+        final String[] labels = Games.labels(this);
+        final int n = (labels == null) ? 0 : labels.length;
+        final String[] items = new String[n + 1];
+        for (int i = 0; i < n; i++) {
+            items[i] = labels[i];
+        }
+        items[n] = "＋ 扫描并选择游戏（自动找已安装的）";
+
+        int cur = Games.selectedIndex(this);
+        if (cur < 0 || cur >= n) {
+            cur = 0;
+        }
+
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("当前游戏（点一项切换）")
+                .setSingleChoiceItems(items, n == 0 ? n : cur,
+                        new android.content.DialogInterface.OnClickListener() {
+                            @Override
+                            public void onClick(android.content.DialogInterface d, int which) {
+                                d.dismiss();
+                                if (which >= n) {
+                                    showScanDialog();
+                                    return;
+                                }
+                                Games.setSelectedIndex(MainActivity.this, which);
+                                reloadGameSpinner();
+                                refreshStatus();
+                                Logger.i("已切换游戏: " + Games.name(which)
+                                        + " -> " + Games.pkg(which));
+                            }
+                        })
+                .setNegativeButton("关闭", null)
+                .show();
+    }
+
+    // ================= 无障碍功能 / 悬浮窗（三合一） =================
+
+    /** 无障碍 + 悬浮窗权限 合并状态标记，用于从系统授权页返回后自动继续 */
+    private boolean permFlow = false;
+
+    /** 三个功能合一个入口：无障碍设置 + 悬浮窗权限 + 显示悬浮窗 */
+    private void showPermissionPanel() {
+        boolean acc = isAccessibilityOn() || AutoService.get() != null;
+        boolean ovl = canDrawOverlay();
+        boolean showing = false;
+        try {
+            showing = FloatWindow.get(this).isShowing();
+        } catch (Throwable ignored) {
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("无障碍服务: ").append(acc ? "已开启" : "未开启").append(NL);
+        sb.append("悬浮窗权限: ").append(ovl ? "已授予" : "未授予").append(NL);
+        sb.append("悬浮窗: ").append(showing ? "显示中" : "未显示").append(NL);
+        sb.append(NL).append("点「一键修复」会用 root 自动把这两项权限补好，")
+                .append("并叫出悬浮窗和悬浮球；")
+                .append("补不上的会跳到系统设置页，回来自动继续。");
+
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("无障碍功能/悬浮窗")
+                .setMessage(sb.toString())
+                .setPositiveButton("一键修复", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int w) {
+                        permFlow = true;
+                        continuePermFlow();
+                    }
+                })
+                .setNegativeButton("关闭", null)
+                .show();
+    }
+
+    /** 一键修复权限的流程：先 root 自动补，补不上就跳系统页，回来自动接着走 */
+    private void continuePermFlow() {
+        boolean acc = isAccessibilityOn() || AutoService.get() != null;
+        boolean ovl = canDrawOverlay();
+
+        if (acc && ovl) {
+            permFlow = false;
+            pendingPerm = "";
+            boolean showing = false;
+            try {
+                FloatWindow fw = FloatWindow.get(this);
+                showing = fw.isShowing();
+                if (!showing) {
+                    fw.show();
+                }
+            } catch (Throwable t) {
+                Logger.w("悬浮窗显示失败: " + t);
+            }
+            try {
+                FloatBall.get(this).show();
+            } catch (Throwable ignored) {
+            }
+            toast(showing ? "无障碍与悬浮窗都已就绪" : "无障碍与悬浮窗都已就绪，悬浮窗已显示");
+            Logger.i("无障碍与悬浮窗就绪，悬浮窗" + (showing ? "原本已显示" : "已显示"));
+            refreshStatus();
+            return;
+        }
+
+        if (RootGrant.ensureAll(this)) {
+            boolean acc2 = RootGrant.isAccessibilityOn(this) || AutoService.get() != null;
+            boolean ovl2 = RootGrant.canDrawOverlay(this);
+            if (acc2 && ovl2) {
+                toast("权限已自动恢复");
+                continuePermFlow();
+                return;
+            }
+        }
+
+        if (!acc) {
+            pendingPerm = "acc";
+            Logger.w("未开启无障碍，已跳转无障碍设置页");
+            toast("请开启「修仙脚本工具」无障碍，返回后自动继续");
+            openAccessibilitySettings();
+        } else {
+            pendingPerm = "overlay";
+            Logger.w("未授予悬浮窗权限，已跳转授权页");
+            toast("请允许「显示在应用上层」，返回后自动继续");
+            requestOverlayPermission();
         }
     }
 
@@ -677,6 +780,7 @@ public class MainActivity extends Activity {
             FloatWindow fw = FloatWindow.get(MainActivity.this);
             fw.show();
             fw.expand();
+            FloatBall.get(MainActivity.this).show();
         } catch (Throwable t) {
             Logger.w("悬浮窗自动显示失败: " + t);
         }
@@ -1082,69 +1186,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    /**
-     * 导出日志到手机「下载 / Download」目录下的 修仙脚本日志.txt。
-     *
-     * Android 10 及以上走系统媒体库（MediaStore.Downloads），不需要任何权限；
-     * Android 9 及以下走老的公共目录写入（清单里已声明 maxSdkVersion=28 的存储权限）。
-     * 导出后文件管理器的「下载」里就能看到，方便拷到电脑或发给我。
-     */
-    private void exportLogToDownloads() {
-        String text;
-        try {
-            text = Logger.fullText();
-        } catch (Throwable t) {
-            toast("读取日志失败");
-            return;
-        }
-        if (text == null || text.trim().length() == 0) {
-            toast("还没有日志，先点「启动脚本」跑一次");
-            return;
-        }
-        String name = "修仙脚本日志.txt";
-        try {
-            if (Build.VERSION.SDK_INT >= 29) {
-                // Android 10+：写进系统下载目录，无需权限
-                android.content.ContentValues cv = new android.content.ContentValues();
-                cv.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name);
-                cv.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "text/plain");
-                cv.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH,
-                        android.os.Environment.DIRECTORY_DOWNLOADS);
-                android.net.Uri uri = getContentResolver().insert(
-                        android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
-                if (uri == null) {
-                    toast("导出失败：无法创建文件");
-                    return;
-                }
-                java.io.OutputStream os = getContentResolver().openOutputStream(uri);
-                os.write(text.getBytes("UTF-8"));
-                os.flush();
-                os.close();
-                toast("已导出到「下载/" + name + "」");
-                Logger.i("日志已导出: 下载/" + name);
-            } else {
-                // Android 9 及以下：直接写公共下载目录
-                java.io.File dir = android.os.Environment.getExternalStoragePublicDirectory(
-                        android.os.Environment.DIRECTORY_DOWNLOADS);
-                if (!dir.exists()) {
-                    dir.mkdirs();
-                }
-                java.io.File out = new java.io.File(dir, name);
-                java.io.OutputStreamWriter w = new java.io.OutputStreamWriter(
-                        new java.io.FileOutputStream(out, false), "UTF-8");
-                w.write(text);
-                w.close();
-                toast("已导出到「下载/" + name + "」");
-                Logger.i("日志已导出: " + out.getAbsolutePath());
-            }
-        } catch (Throwable t) {
-            toast("导出失败: " + t.getClass().getSimpleName());
-            Logger.e("导出日志失败: " + t);
-            return;
-        }
-        // 导出完顺手复制一份，双保险
-        copyLogToClipboard();
-    }
 
     // ================= 四个标签页 =================
 
