@@ -1006,6 +1006,35 @@ public class Pages {
 
     // ======================= 任务树渲染 =======================
 
+    /**
+     * 三个页面统一的分列规则，按任务名长度决定一行放几个：
+     * 2 字一行 4 个、3 字一行 3 个、4~5 字一行 2 个、6 字及以上一行 1 个。
+     * 名字越长放得越少，保证整名能显示、不被截断。
+     */
+    private static int colsFor(String name) {
+        int len = name == null ? 0 : name.length();
+        if (len <= 2) {
+            return 4;
+        } else if (len == 3) {
+            return 3;
+        } else if (len <= 5) {
+            return 2;
+        }
+        return 1;
+    }
+
+    /** 列数越少格子越宽，字号就跟着放大一点，窄格子才用小字 */
+    private static float fontFor(int cols) {
+        if (cols >= 4) {
+            return 10.5f;
+        } else if (cols == 3) {
+            return 11.5f;
+        } else if (cols == 2) {
+            return 12.5f;
+        }
+        return 13f;
+    }
+
     /** 网格一行放几个任务 */
     private static final int GRID_COLS = 4;
 
@@ -1057,7 +1086,13 @@ public class Pages {
         }
     }
 
-    /** 把攒下的叶子项按每行 4 个铺成格子；不足 4 个补空位，保证列对齐 */
+    /**
+     * 把攒下的叶子项铺成格子。
+     *
+     * 每行放几个不再写死，而是看名字长度（colsFor）：
+     * 2 字 4 个、3 字 3 个、4~5 字 2 个、6 字以上 1 个。
+     * 长度不一样的项另起一行，免得长名字被挤窄后截断。
+     */
     private static void flushGrid(Context ctx, LinearLayout body, final LinearLayout pageBox,
                                   final List<Node> roots, final SharedPreferences sp,
                                   final SharedPreferences cf, final List<Node> leaves,
@@ -1065,22 +1100,31 @@ public class Pages {
         if (leaves.isEmpty()) {
             return;
         }
-        for (int start = 0; start < leaves.size(); start += GRID_COLS) {
+        int start = 0;
+        while (start < leaves.size()) {
+            int cols = colsFor(leaves.get(start).name);
+            int end = start;
+            while (end < leaves.size() && end - start < cols
+                    && colsFor(leaves.get(end).name) == cols) {
+                end++;
+            }
             LinearLayout line = new LinearLayout(ctx);
             line.setOrientation(LinearLayout.HORIZONTAL);
             line.setGravity(Gravity.CENTER_VERTICAL);
             line.setPadding(dp(ctx, 4 + depth * 10), dp(ctx, 1), dp(ctx, 4), dp(ctx, 1));
 
-            for (int k = 0; k < GRID_COLS; k++) {
+            for (int k = 0; k < cols; k++) {
                 int idx = start + k;
-                if (idx < leaves.size()) {
-                    line.addView(buildCell(ctx, pageBox, roots, sp, cf, leaves.get(idx), readOnly));
+                if (idx < end) {
+                    line.addView(buildCell(ctx, pageBox, roots, sp, cf,
+                            leaves.get(idx), readOnly, cols));
                 } else {
                     View gap = new View(ctx);
                     line.addView(gap, new LinearLayout.LayoutParams(0, 1, 1f));
                 }
             }
             body.addView(line);
+            start = end;
         }
     }
 
@@ -1088,7 +1132,7 @@ public class Pages {
     private static View buildCell(Context ctx, final LinearLayout pageBox,
                                   final List<Node> roots, final SharedPreferences sp,
                                   final SharedPreferences cf, final Node n,
-                                  final boolean readOnly) {
+                                  final boolean readOnly, int cols) {
         LinearLayout cell = new LinearLayout(ctx);
         cell.setOrientation(LinearLayout.HORIZONTAL);
         cell.setGravity(Gravity.CENTER_VERTICAL);
@@ -1097,13 +1141,13 @@ public class Pages {
         cell.setLayoutParams(new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
-        cell.addView(checkBoxSized(ctx, n.checked, false, 15));
+        cell.addView(checkBoxSized(ctx, n.checked, false, cols >= 4 ? 15 : 17));
 
         TextView label = new TextView(ctx);
         label.setText(n.name);
-        // 四列格子最窄，字号和间距都要收紧，否则「仙界灵宠」「掌门大厅」
-        // 这种四字任务名会被截成「仙界灵…」，看不出是哪一项。
-        label.setTextSize(10.5f);
+        // 字号跟着列数走：格子越窄字越小，四列时最紧，
+        // 否则「仙界灵宠」「掌门大厅」这种名字会被截成「仙界灵…」。
+        label.setTextSize(fontFor(cols));
         label.setSingleLine(true);
         label.setEllipsize(android.text.TextUtils.TruncateAt.END);
         label.setTextColor(Color.parseColor(n.checked ? COLOR_TEXT : "#FF3A3A3A"));
@@ -1315,43 +1359,43 @@ public class Pages {
     private static List<Node> rankTree() {
         List<Node> roots = new ArrayList<Node>();
 
-        Node limit = node("限时活动", true);
+        Node limit = node("限时活动");
         rankLeaves(limit, "通天神木（灵力）", "妖兽作乱（幼灵）",
                 "秘境寻宝（论道）", "藏经阁（资质）");
         roots.add(limit);
 
-        Node rank = node("仙榜", true);
+        Node rank = node("仙榜");
 
-        Node main = node("主榜", true);
-        Node benfu = node("本服", true);
+        Node main = node("主榜");
+        Node benfu = node("本服");
         rankLeaves(benfu, "灵修消耗榜", "灵军榜", "遗迹榜", "灵契消耗榜", "仙力榜",
                 "灵宠榜", "论道榜", "幼灵榜", "资质榜", "小世界榜");
-        Node kuafu = node("跨服", true);
+        Node kuafu = node("跨服");
         rankLeaves(kuafu, "区服仙力榜", "区服灵宠榜", "区服论道榜", "区服幼灵榜", "区服资质榜");
-        Node xuantian = node("玄天", true);
+        Node xuantian = node("玄天");
         rankLeaves(xuantian, "玄天仙力榜", "玄天灵宠榜", "玄天论道榜", "玄天幼灵榜", "玄天资质榜");
-        Node zhengba = node("争霸", true);
+        Node zhengba = node("争霸");
         rankLeaves(zhengba, "仙力争霸榜", "灵宠争霸榜", "论道争霸榜", "资质争霸榜");
         main.children.add(benfu);
         main.children.add(kuafu);
         main.children.add(xuantian);
         main.children.add(zhengba);
 
-        Node fengyun = node("风云", true);
-        Node hongmeng = node("鸿蒙", true);
+        Node fengyun = node("风云");
+        Node hongmeng = node("鸿蒙");
         rankLeaves(hongmeng, "仙力风云榜 - 鸿蒙", "灵宠风云榜 - 鸿蒙", "论道风云榜 - 鸿蒙",
                 "幼灵风云榜 - 鸿蒙", "资质风云榜 - 鸿蒙");
-        Node jiuxiao = node("九霄", true);
+        Node jiuxiao = node("九霄");
         rankLeaves(jiuxiao, "仙力风云榜 - 九霄", "灵宠风云榜 - 九霄", "论道风云榜 - 九霄",
                 "幼灵风云榜 - 九霄", "资质风云榜 - 九霄");
-        Node wandao = node("万道", true);
+        Node wandao = node("万道");
         rankLeaves(wandao, "仙力风云榜 - 万道", "灵宠风云榜 - 万道", "论道风云榜 - 万道",
                 "幼灵风云榜 - 万道", "资质风云榜 - 万道");
         fengyun.children.add(hongmeng);
         fengyun.children.add(jiuxiao);
         fengyun.children.add(wandao);
 
-        Node dianfeng = node("巅峰", true);
+        Node dianfeng = node("巅峰");
         rankLeaves(dianfeng, "巅峰之战");
 
         rank.children.add(main);
@@ -1359,12 +1403,12 @@ public class Pages {
         rank.children.add(dianfeng);
         roots.add(rank);
 
-        Node release = node("释放榜", true);
-        Node rBenfu = node("本服", true);
+        Node release = node("释放榜");
+        Node rBenfu = node("本服");
         rankLeaves(rBenfu, "魔族入侵");
-        Node rKuafu = node("跨服", true);
+        Node rKuafu = node("跨服");
         rankLeaves(rKuafu, "魔族争霸");
-        Node rZhengba = node("争霸", true);
+        Node rZhengba = node("争霸");
         rankLeaves(rZhengba, "绝地论道");
         release.children.add(rBenfu);
         release.children.add(rKuafu);
@@ -1403,20 +1447,16 @@ public class Pages {
         }
     }
 
-    /** 按本组最长的名字决定几列，名字越长放得越少，保证不被截断 */
+    /** 仙榜沿用同一套分列规则，两个页面的对齐方式保持一致 */
     private static int rankCols(List<Node> items) {
         int max = 0;
         for (int i = 0; i < items.size(); i++) {
-            if (items.get(i).name.length() > max) {
-                max = items.get(i).name.length();
+            int c = colsFor(items.get(i).name);
+            if (i == 0 || c < max) {
+                max = c;
             }
         }
-        if (max <= 4) {
-            return 4;
-        } else if (max <= 8) {
-            return 3;
-        }
-        return 2;
+        return max == 0 ? 4 : max;
     }
 
     private static void rankGrid(Context ctx, LinearLayout body, final List<Node> roots,
@@ -1433,7 +1473,7 @@ public class Pages {
             for (int k = 0; k < cols; k++) {
                 int idx = start + k;
                 if (idx < items.size()) {
-                    line.addView(rankCell(ctx, roots, items.get(idx), save));
+                    line.addView(rankCell(ctx, roots, items.get(idx), save, cols));
                 } else {
                     View gap = new View(ctx);
                     line.addView(gap, new LinearLayout.LayoutParams(0, 1, 1f));
@@ -1445,7 +1485,7 @@ public class Pages {
 
     /** 格子里的一项：勾选框 + 名称 */
     private static View rankCell(Context ctx, final List<Node> roots, final Node n,
-                                 final Runnable save) {
+                                 final Runnable save, int cols) {
         LinearLayout cell = new LinearLayout(ctx);
         cell.setOrientation(LinearLayout.HORIZONTAL);
         cell.setGravity(Gravity.CENTER_VERTICAL);
@@ -1454,11 +1494,11 @@ public class Pages {
         cell.setLayoutParams(new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
-        cell.addView(checkBoxSized(ctx, n.checked, false, 15));
+        cell.addView(checkBoxSized(ctx, n.checked, false, cols >= 4 ? 15 : 17));
 
         TextView label = new TextView(ctx);
         label.setText(n.name);
-        label.setTextSize(10.5f);
+        label.setTextSize(fontFor(cols));
         label.setSingleLine(true);
         label.setEllipsize(android.text.TextUtils.TruncateAt.END);
         label.setTextColor(Color.parseColor(n.checked ? COLOR_TEXT : "#FF3A3A3A"));
