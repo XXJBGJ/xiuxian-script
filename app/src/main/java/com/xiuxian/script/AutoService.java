@@ -666,7 +666,13 @@ public class AutoService extends AccessibilityService {
                         recordTiming(j + 1, steps.length(), s, __cost);
                     }
                 }
-                Logger.i("账号 " + a.user + " 的流程已走完，准备切下一个账号");
+                Logger.i("账号 " + a.user + " 的流程已走完，开始跑勾选的日常任务");
+                try {
+                    runDailyTasks();
+                } catch (Throwable t) {
+                    Logger.w("日常任务异常: " + t);
+                }
+                Logger.i("账号 " + a.user + " 的日常任务已处理完，准备切下一个账号");
                 sleep(800);
             }
             // 【构建 66】流程跑完后再扫一遍弹窗，避免结束后一直停在
@@ -3233,4 +3239,323 @@ public class AutoService extends AccessibilityService {
     public void clearTiming() {
         pTimingReport = "";
     }
+
+    // ===================== 日常任务：按天途分步流程执行 =====================
+
+    /** 天途流程配置的基准分辨率（所有 config 都按 540x960 抓的坐标） */
+    private static final int FLOW_BASE_W = 540;
+    private static final int FLOW_BASE_H = 960;
+
+    /** 任务名和流程名对不上的，在这里给个别名 */
+    private static final String[][] FLOW_ALIAS = {
+            {"建造", "建设"},
+            {"仙盟事务", "仙盟事务"},
+            {"天宫幻境", "天宫幻境"},
+            {"慕仙境", "慕仙境"},
+    };
+
+    /** 把内置的识别模板与流程解包到 App 私有目录（tpl/ 与 flows/），只解一次 */
+    private void ensureFlowPack() {
+        try {
+            java.io.File root = BundledFlows.ensure(this);
+            java.io.File tpl = new java.io.File(root, "tpl");
+            String[] names = tpl.list();
+            Logger.i("识别模板就绪: " + (names == null ? 0 : names.length) + " 个");
+        } catch (Throwable t) {
+            Logger.w("流程资源解包失败: " + t);
+        }
+    }
+
+    /** 任务名 → 流程文件名；按关键字匹配，匹配不到返回 null */
+    private String flowAssetFor(String task) {
+        if (task == null || task.length() == 0) {
+            return null;
+        }
+        String key = task.trim();
+        for (int i = 0; i < FLOW_ALIAS.length; i++) {
+            if (FLOW_ALIAS[i][0].equals(key)) {
+                key = FLOW_ALIAS[i][1];
+                break;
+            }
+        }
+        try {
+            String[] list = new java.io.File(getFilesDir(), "flows").list();
+            if (list == null) {
+                return null;
+            }
+            String fuzzy = null;
+            for (int i = 0; i < list.length; i++) {
+                String fn = list[i];
+                int dash = fn.indexOf('-');
+                String base = fn.substring(dash + 1).replace(".config.json", "");
+                if (base.equals(key)) {
+                    return fn;
+                }
+                if (fuzzy == null && (base.contains(key) || key.contains(base))) {
+                    fuzzy = fn;
+                }
+            }
+            return fuzzy;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private String readFlowFile(String name) {
+        try {
+            java.io.InputStream in = new java.io.FileInputStream(
+                    new java.io.File(new java.io.File(getFilesDir(), "flows"), name));
+            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                bos.write(buf, 0, n);
+            }
+            in.close();
+            return new String(bos.toByteArray(), "UTF-8");
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
+     * 在屏幕（或指定区域内）找模板图。region 按 540x960 基准给，传 null 表示全屏。
+     * tap=true 时命中就点匹配中心。
+     */
+    private boolean findImageRegion(String tplName, double threshold, int[] region, boolean tap) {
+        try {
+            java.io.File tf = new java.io.File(getFilesDir(), "tpl/" + tplName);
+            if (!tf.exists()) {
+                Logger.w("模板不存在: " + tplName);
+                return false;
+            }
+            android.graphics.Bitmap tb = android.graphics.BitmapFactory.decodeFile(tf.getAbsolutePath());
+            if (tb == null) {
+                Logger.w("模板解码失败: " + tplName);
+                return false;
+            }
+            int tw = tb.getWidth();
+            int th = tb.getHeight();
+            int[] tp = new int[tw * th];
+            tb.getPixels(tp, 0, tw, 0, 0, tw, th);
+            int[] tg = new int[tw * th];
+            for (int i = 0; i < tp.length; i++) {
+                int c = tp[i];
+                tg[i] = ((c >> 16 & 0xFF) * 77 + (c >> 8 & 0xFF) * 151 + (c & 0xFF) * 28) >> 8;
+            }
+            tb.recycle();
+            if (!shot() || sPix == null) {
+                Logger.w("截图失败，跳过识图");
+                return false;
+            }
+            if (tw > sW || th > sH) {
+                Logger.w("模板比屏幕大，跳过: " + tplName);
+                return false;
+            }
+            int[] sg = new int[sW * sH];
+            for (int i = 0; i < sPix.length; i++) {
+                int c = sPix[i];
+                sg[i] = ((c >> 16 & 0xFF) * 77 + (c >> 8 & 0xFF) * 151 + (c & 0xFF) * 28) >> 8;
+            }
+            int x0 = 0;
+            int y0 = 0;
+            int x1 = sW - tw;
+            int y1 = sH - th;
+            if (region != null && region.length >= 4) {
+                x0 = Math.max(0, region[0] * sW / FLOW_BASE_W);
+                y0 = Math.max(0, region[1] * sH / FLOW_BASE_H);
+                x1 = Math.min(sW - tw, (region[0] + region[2]) * sW / FLOW_BASE_W);
+                y1 = Math.min(sH - th, (region[1] + region[3]) * sH / FLOW_BASE_H);
+            }
+            if (x1 < x0) {
+                x1 = x0;
+            }
+            if (y1 < y0) {
+                y1 = y0;
+            }
+            int stepPx = tw > 120 ? 4 : 3;
+            double best = -1;
+            int bx = 0;
+            int by = 0;
+            for (int y = y0; y <= y1; y += stepPx) {
+                for (int x = x0; x <= x1; x += stepPx) {
+                    long sum = 0;
+                    int cnt = 0;
+                    for (int ty = 0; ty < th; ty += 3) {
+                        int srow = (y + ty) * sW + x;
+                        int trow = ty * tw;
+                        for (int tx = 0; tx < tw; tx += 3) {
+                            sum += Math.abs(sg[srow + tx] - tg[trow + tx]);
+                            cnt++;
+                        }
+                    }
+                    double score = 1.0 - (sum / (double) Math.max(1, cnt)) / 255.0;
+                    if (score > best) {
+                        best = score;
+                        bx = x;
+                        by = y;
+                    }
+                }
+            }
+            boolean hitOk = best >= threshold;
+            Logger.i("识图 " + tplName + " 相似度 " + String.format("%.3f", best)
+                    + (hitOk ? " 命中" : " 未命中"));
+            if (hitOk && tap) {
+                clickPx(bx + tw / 2, by + th / 2);
+            }
+            return hitOk;
+        } catch (Throwable t) {
+            Logger.w("识图异常: " + t);
+            return false;
+        }
+    }
+
+    /** 按 540x960 基准坐标点一下 */
+    private void tapFlow(int x, int y, int count, int pressMs) {
+        int sx = x * sW / FLOW_BASE_W;
+        int sy = y * sH / FLOW_BASE_H;
+        for (int i = 0; i < Math.max(1, count); i++) {
+            clickPx(sx, sy);
+            if (pressMs > 0 && i + 1 < count) {
+                sleep(pressMs);
+            }
+        }
+    }
+
+    /** 执行一个流程文件；返回 true 表示正常走到结束 */
+    private boolean runFlowAsset(String asset) {
+        String json = readFlowFile(asset);
+        if (json == null) {
+            Logger.w("流程读取失败: " + asset);
+            return false;
+        }
+        try {
+            org.json.JSONObject root = new org.json.JSONObject(json);
+            org.json.JSONArray arr = root.optJSONArray("steps");
+            if (arr == null || arr.length() == 0) {
+                Logger.w("流程没有步骤: " + asset);
+                return false;
+            }
+            java.util.HashMap<Integer, org.json.JSONObject> map =
+                    new java.util.HashMap<Integer, org.json.JSONObject>();
+            int first = Integer.MAX_VALUE;
+            for (int i = 0; i < arr.length(); i++) {
+                org.json.JSONObject st = arr.optJSONObject(i);
+                if (st == null) {
+                    continue;
+                }
+                int id = st.optInt("id", i + 1);
+                map.put(id, st);
+                if (id < first) {
+                    first = id;
+                }
+            }
+            int cur = first;
+            int guard = 0;
+            while (map.containsKey(cur) && guard++ < 600) {
+                org.json.JSONObject st = map.get(cur);
+                String type = st.optString("type", "");
+                int wait = st.optInt("wait", 300);
+                int next = cur + 1;
+                if ("ifimg".equals(type)) {
+                    String tpl = st.optString("tpl", "");
+                    double thresh = st.optDouble("thresh", 0.9);
+                    boolean tapMatch = st.optBoolean("tap_match", false);
+                    int[] region = null;
+                    org.json.JSONArray rg = st.optJSONArray("region");
+                    if (rg != null && rg.length() >= 4) {
+                        region = new int[]{rg.optInt(0), rg.optInt(1), rg.optInt(2), rg.optInt(3)};
+                    }
+                    boolean hitOk = findImageRegion(tpl, thresh, region, tapMatch);
+                    next = hitOk ? st.optInt("true", cur + 1) : st.optInt("false", cur + 1);
+                } else if ("click".equals(type)) {
+                    tapFlow(st.optInt("x", 0), st.optInt("y", 0),
+                            st.optInt("count", 1), st.optInt("press_ms", 25));
+                } else if ("goto".equals(type)) {
+                    next = st.optInt("to", cur + 1);
+                } else if ("swipe".equals(type)) {
+                    int x1 = st.optInt("x1", 0) * sW / FLOW_BASE_W;
+                    int y1 = st.optInt("y1", 0) * sH / FLOW_BASE_H;
+                    int x2 = st.optInt("x2", 0) * sW / FLOW_BASE_W;
+                    int y2 = st.optInt("y2", 0) * sH / FLOW_BASE_H;
+                    swipePx(x1, y1, x2, y2, st.optInt("dur", 300));
+                } else if ("log".equals(type)) {
+                    Logger.i("[流程] " + st.optString("desc", ""));
+                } else if ("end".equals(type)) {
+                    break;
+                } else if ("ifcolor".equals(type) || "ifnotcolor".equals(type)) {
+                    // 取色判断本轮未做，统一走 true 分支，避免流程卡死
+                    next = st.optInt("true", cur + 1);
+                } else {
+                    next = cur + 1;
+                }
+                if (wait > 0) {
+                    sleep(wait);
+                }
+                if (Thread.currentThread().isInterrupted()) {
+                    Logger.w("流程被中断: " + asset);
+                    return false;
+                }
+                if (next == cur) {
+                    // 自我重试的步骤，最多连续跑 60 次，防止死循环
+                    guard += 1;
+                }
+                cur = next;
+            }
+            return true;
+        } catch (Throwable t) {
+            Logger.w("流程执行异常 " + asset + ": " + t);
+            return false;
+        }
+    }
+
+    /** 跑用户勾选的日常任务：按关键字逐个匹配流程并执行 */
+    private void runDailyTasks() {
+        android.content.SharedPreferences sp = getSharedPreferences("daily_sel", MODE_PRIVATE);
+        String csv = sp.getString("custom_tasks", "");
+        if (csv == null || csv.trim().length() == 0) {
+            Logger.i("[日常] 没有勾选任何任务，跳过");
+            return;
+        }
+        Logger.i("[日常] 启动，当前勾选: " + csv);
+        ensureFlowPack();
+        String[] items = csv.split(",");
+        int total = 0;
+        int done = 0;
+        for (int i = 0; i < items.length; i++) {
+            if (items[i].trim().length() > 0) {
+                total++;
+            }
+        }
+        int idx = 0;
+        for (int i = 0; i < items.length; i++) {
+            String raw = items[i].trim();
+            if (raw.length() == 0) {
+                continue;
+            }
+            idx++;
+            String name = raw.substring(raw.lastIndexOf('/') + 1);
+            String asset = flowAssetFor(name);
+            if (asset == null) {
+                Logger.w("[日常] " + name + " 暂无对应流程，跳过");
+                continue;
+            }
+            Logger.i("[日常] 第 " + idx + "/" + total + " 个任务 " + name + " → " + asset);
+            long t0 = System.currentTimeMillis();
+            // 每个任务开始先回到游戏主界面附近，避免上一步残留弹窗干扰
+            boolean okDone = runFlowAsset(asset);
+            long cost = System.currentTimeMillis() - t0;
+            Logger.i("[日常] " + name + (okDone ? " 完成" : " 中断") + "，耗时 "
+                    + (cost / 1000.0) + " 秒");
+            if (okDone) {
+                done++;
+            }
+            if (Thread.currentThread().isInterrupted()) {
+                break;
+            }
+        }
+        Logger.i("[日常] 结束，完成 " + done + "/" + total + " 个任务");
+    }
+
+
 }
