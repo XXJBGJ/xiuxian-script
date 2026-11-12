@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>修仙脚本工具</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <h1>修仙脚本工具</h1>
+    </div>
+    <div class="topbar-right">
+      <a id="github-link" class="repo-badge" href="#" target="_blank" rel="noopener">
+        <span class="repo-dot"></span>
+        <span id="repo-name">GitHub 仓库</span>
+      </a>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabs">
+    <button class="tab active" data-tab="script">脚本</button>
+    <button class="tab" data-tab="daily">日常</button>
+    <button class="tab" data-tab="rank">仙榜</button>
+    <button class="tab" data-tab="activity">活动</button>
+  </nav>
+
+  <main class="content">
+    <!-- 脚本：复刻现有安卓端界面 -->
+    <section id="panel-script" class="panel active">
+      <div class="script-column">
+        <!-- 状态区 -->
+        <div class="status-card">
+          <div class="status-line"><span class="k">无障碍服务：</span><span id="st-accessibility">已连接</span></div>
+          <div class="status-line"><span class="k">脚本状态：</span><span id="st-script">待机</span></div>
+          <div class="status-line"><span class="k">屏幕：</span><span id="st-screen">540 × 960</span></div>
+          <div class="status-line"><span class="k">账号：</span><span id="st-account">已勾选 1 / 共 1 个（只会跑勾选的）</span></div>
+          <div class="status-line"><span class="k">悬浮窗权限：</span><span id="st-overlay">已授予</span></div>
+          <div class="status-line"><span class="k">Android：</span><span id="st-android">9</span><span class="k"> / 日志：</span><span id="st-logpath">/storage/emulated/0/Android/data/com.xiuxian.script/files/logs</span></div>
+          <div class="status-line"><span class="k">当前游戏：</span><span id="st-game">天途 (com.tt.spgw.qg)</span> <span class="green">[已安装]</span></div>
+          <div class="game-select">
+            <span id="st-gamever">天途 · 1.0.4</span>
+            <span class="chev">▾</span>
+          </div>
+        </div>
+
+        <!-- 操作按钮 -->
+        <div class="action-col">
+          <button class="action-btn" data-action="scan-game">扫描并选择游戏</button>
+          <button class="action-btn" data-action="pkg-lib">安装包库（各游戏历史版本）</button>
+          <button class="action-btn" data-action="account">账号管理（按游戏分别保存）</button>
+        </div>
+
+        <!-- 分步配置（电脑端 runner 入口） -->
+        <div class="config-section">
+          <div class="section-title">分步配置（电脑端 runner）</div>
+          <div class="config-layout">
+            <aside class="script-list" id="script-list"></aside>
+            <section class="script-detail">
+              <div id="script-detail-empty" class="empty-hint">从左侧选择一个日常分步配置</div>
+              <div id="script-detail-body" hidden>
+                <h2 id="detail-name"></h2>
+                <div class="meta-row">
+                  <span class="chip" id="detail-steps"></span>
+                  <span class="chip warn" id="detail-pending"></span>
+                </div>
+                <p class="note" id="detail-note"></p>
+                <div class="run-controls">
+                  <label>循环次数 <input type="number" id="opt-loops" min="1" value="1"></label>
+                  <label>速度倍率 <input type="number" id="opt-speed" step="0.1" min="0.2" value="1.0"></label>
+                  <label class="check"><input type="checkbox" id="opt-shot"> 存判断截图</label>
+                  <button id="btn-run" class="primary">运行配置</button>
+                </div>
+              </div>
+            </section>
+          </div>
+        </div>
+
+        <!-- 运行日志 -->
+        <div class="log-section">
+          <div class="section-title">运行日志（每一行是一次动作，越往下越新）</div>
+          <div class="log-box">
+            <pre id="run-log"></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 日常 -->
+    <section id="panel-daily" class="panel">
+      <div class="daily-grid">
+        <div class="card">
+          <h2>Tabbit 浏览器任务</h2>
+          <p class="card-sub">从 Tabbit 浏览器同步数据读取的任务 / 对话项</p>
+          <ul id="tabbit-tasks" class="task-list"></ul>
+        </div>
+        <div class="card">
+          <h2>项目任务（豆包完成）</h2>
+          <p class="card-sub">修仙脚本各分步规则的读取与闭环进度</p>
+          <ul id="project-tasks" class="task-list"></ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- 仙榜 -->
+    <section id="panel-rank" class="panel">
+      <div class="placeholder">
+        <div class="placeholder-mark">榜</div>
+        <h2>仙榜</h2>
+        <p>仙榜界面待更新，具体任务后续补充。</p>
+      </div>
+    </section>
+
+    <!-- 活动 -->
+    <section id="panel-activity" class="panel">
+      <div class="placeholder">
+        <div class="placeholder-mark">动</div>
+        <h2>活动</h2>
+        <p>活动界面待更新，具体任务后续补充。</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">本地工作台 · 仅连接本机雷电模拟器与本机文件，不上传凭据</footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
