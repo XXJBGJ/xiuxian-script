@@ -1,0 +1,22 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8765
+  },
+  "xiuxian": {
+    "root": "D:\\桌面\\修仙脚本工具\\天途流程",
+    "runner": "run.py",
+    "config_dir": "日常分步",
+    "tpl_dir": "识别模板",
+    "log_dir": "logs"
+  },
+  "tabbit": {
+    "sync_leveldb": "C:\\Users\\72462\\AppData\\Local\\Tabbit Browser\\User Data\\Default\\Sync Data\\LevelDB",
+    "browser_label": "Tabbit Browser"
+  },
+  "github": {
+    "owner": "XXJBGJ",
+    "repo": "xiuxian-script",
+    "url": "https://github.com/XXJBGJ/xiuxian-script"
+  }
+}
