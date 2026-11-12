@@ -1267,75 +1267,363 @@ public class Pages {
 
     // ======================= 仙榜 =======================
 
-    public static void renderRank(Context ctx, LinearLayout box) {
+    /**
+     * 仙榜页：按截图做成分组的勾选树。
+     *
+     * 结构为 限时活动 / 仙榜（主榜·风云·巅峰）/ 释放榜（本服·跨服·争霸）。
+     * 勾选结果按「索引路径」保存，例如 1.0.2 表示
+     * 第 2 个根的第 1 个子项的第 3 个孩子。
+     * 这样「本服」在「主榜」和「释放榜」下面同名也不会互相串。
+     */
+    public static void renderRank(Context ctx, final LinearLayout box) {
         box.removeAllViews();
 
+        final SharedPreferences sp = ctx.getSharedPreferences(SP_CFG, Context.MODE_PRIVATE);
+        final List<Node> roots = rankTree();
+
+        List<String> sel = splitPaths(sp.getString("rank_sel", ""));
+        for (int i = 0; i < roots.size(); i++) {
+            rankApply(roots.get(i), String.valueOf(i), sel);
+            rankFix(roots.get(i));
+        }
+
         box.addView(pageTitle(ctx, "仙榜"));
-        box.addView(caption(ctx, "按从上到下三个区：限时活动 → 主榜 → 释放榜"));
+        box.addView(caption(ctx, "勾选要执行的榜单；勾父项会把下面所有子项一起勾上。选择会自动保存。"));
 
-        box.addView(rankSection(ctx, "限时活动",
-                "名称、起止时间、当前名次与奖励稍后更新"));
-        box.addView(rankSection(ctx, "主榜",
-                "榜单名称与名次稍后更新"));
-        box.addView(rankSection(ctx, "释放榜",
-                "释放榜名次稍后更新"));
+        final Runnable save = new Runnable() {
+            @Override
+            public void run() {
+                List<String> out = new ArrayList<String>();
+                for (int i = 0; i < roots.size(); i++) {
+                    rankWalk(roots.get(i), String.valueOf(i), out);
+                }
+                sp.edit().putString("rank_sel", rankJoin(out)).apply();
+                renderRank(ctx, box);
+            }
+        };
+
+        for (int i = 0; i < roots.size(); i++) {
+            Node sec = roots.get(i);
+            LinearLayout card = card(ctx);
+            card.addView(rankRow(ctx, roots, sec, 0, true, save));
+            rankChildren(ctx, card, roots, sec, 1, save);
+            box.addView(card);
+        }
     }
 
-    /** 仙榜的一个区：标题 + 数据表（暂时空，等具体内容） */
-    private static View rankSection(Context ctx, String title, String hintText) {
-        LinearLayout card = card(ctx);
-        card.addView(rowTitle(ctx, title, "待补充"));
+    /** 仙榜的三个大区，层级与游戏内一致 */
+    private static List<Node> rankTree() {
+        List<Node> roots = new ArrayList<Node>();
 
-        LinearLayout head = new LinearLayout(ctx);
-        head.setOrientation(LinearLayout.HORIZONTAL);
-        head.setPadding(0, dp(ctx, 6), 0, dp(ctx, 2));
-        head.addView(cell(ctx, "名次", 0.18f, true));
-        head.addView(cell(ctx, "角色", 0.42f, true));
-        head.addView(cell(ctx, "数值", 0.4f, true));
-        card.addView(head);
+        Node limit = node("限时活动", true);
+        rankLeaves(limit, "通天神木（灵力）", "妖兽作乱（幼灵）",
+                "秘境寻宝（论道）", "藏经阁（资质）");
+        roots.add(limit);
 
-        for (int i = 1; i <= 3; i++) {
-            LinearLayout r = new LinearLayout(ctx);
-            r.setOrientation(LinearLayout.HORIZONTAL);
-            r.setPadding(0, dp(ctx, 3), 0, dp(ctx, 3));
-            r.addView(cell(ctx, String.valueOf(i), 0.18f, false));
-            r.addView(cell(ctx, "—", 0.42f, false));
-            r.addView(cell(ctx, "—", 0.4f, false));
-            card.addView(r);
-        }
-        card.addView(hint(ctx, hintText));
-        return card;
+        Node rank = node("仙榜", true);
+
+        Node main = node("主榜", true);
+        Node benfu = node("本服", true);
+        rankLeaves(benfu, "灵修消耗榜", "灵军榜", "遗迹榜", "灵契消耗榜", "仙力榜",
+                "灵宠榜", "论道榜", "幼灵榜", "资质榜", "小世界榜");
+        Node kuafu = node("跨服", true);
+        rankLeaves(kuafu, "区服仙力榜", "区服灵宠榜", "区服论道榜", "区服幼灵榜", "区服资质榜");
+        Node xuantian = node("玄天", true);
+        rankLeaves(xuantian, "玄天仙力榜", "玄天灵宠榜", "玄天论道榜", "玄天幼灵榜", "玄天资质榜");
+        Node zhengba = node("争霸", true);
+        rankLeaves(zhengba, "仙力争霸榜", "灵宠争霸榜", "论道争霸榜", "资质争霸榜");
+        main.children.add(benfu);
+        main.children.add(kuafu);
+        main.children.add(xuantian);
+        main.children.add(zhengba);
+
+        Node fengyun = node("风云", true);
+        Node hongmeng = node("鸿蒙", true);
+        rankLeaves(hongmeng, "仙力风云榜 - 鸿蒙", "灵宠风云榜 - 鸿蒙", "论道风云榜 - 鸿蒙",
+                "幼灵风云榜 - 鸿蒙", "资质风云榜 - 鸿蒙");
+        Node jiuxiao = node("九霄", true);
+        rankLeaves(jiuxiao, "仙力风云榜 - 九霄", "灵宠风云榜 - 九霄", "论道风云榜 - 九霄",
+                "幼灵风云榜 - 九霄", "资质风云榜 - 九霄");
+        Node wandao = node("万道", true);
+        rankLeaves(wandao, "仙力风云榜 - 万道", "灵宠风云榜 - 万道", "论道风云榜 - 万道",
+                "幼灵风云榜 - 万道", "资质风云榜 - 万道");
+        fengyun.children.add(hongmeng);
+        fengyun.children.add(jiuxiao);
+        fengyun.children.add(wandao);
+
+        Node dianfeng = node("巅峰", true);
+        rankLeaves(dianfeng, "巅峰之战");
+
+        rank.children.add(main);
+        rank.children.add(fengyun);
+        rank.children.add(dianfeng);
+        roots.add(rank);
+
+        Node release = node("释放榜", true);
+        Node rBenfu = node("本服", true);
+        rankLeaves(rBenfu, "魔族入侵");
+        Node rKuafu = node("跨服", true);
+        rankLeaves(rKuafu, "魔族争霸");
+        Node rZhengba = node("争霸", true);
+        rankLeaves(rZhengba, "绝地论道");
+        release.children.add(rBenfu);
+        release.children.add(rKuafu);
+        release.children.add(rZhengba);
+        roots.add(release);
+
+        return roots;
     }
 
-    private static TextView cell(Context ctx, String text, float weight, boolean head) {
-        TextView v = new TextView(ctx);
-        v.setText(text);
-        v.setTextSize(head ? 11.5f : 12.5f);
-        v.setTextColor(Color.parseColor(head ? COLOR_MUTED : COLOR_TEXT));
-        if (head) {
-            v.setTypeface(Typeface.DEFAULT_BOLD);
+    private static void rankLeaves(Node parent, String... names) {
+        for (int i = 0; i < names.length; i++) {
+            parent.children.add(node(names[i]));
         }
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, weight);
-        v.setLayoutParams(lp);
-        return v;
+    }
+
+    /** 一组子项：全是叶子就铺成格子，混着父项就整行排（避免父项被挤成别人的子项） */
+    private static void rankChildren(Context ctx, LinearLayout body, final List<Node> roots,
+                                     final Node parent, int depth, final Runnable save) {
+        boolean allLeaves = true;
+        for (int i = 0; i < parent.children.size(); i++) {
+            if (parent.children.get(i).isParent()) {
+                allLeaves = false;
+                break;
+            }
+        }
+        if (allLeaves) {
+            rankGrid(ctx, body, roots, parent.children, depth, save);
+            return;
+        }
+        for (int i = 0; i < parent.children.size(); i++) {
+            Node c = parent.children.get(i);
+            body.addView(rankRow(ctx, roots, c, depth, false, save));
+            if (c.isParent()) {
+                rankChildren(ctx, body, roots, c, depth + 1, save);
+            }
+        }
+    }
+
+    /** 按本组最长的名字决定几列，名字越长放得越少，保证不被截断 */
+    private static int rankCols(List<Node> items) {
+        int max = 0;
+        for (int i = 0; i < items.size(); i++) {
+            if (items.get(i).name.length() > max) {
+                max = items.get(i).name.length();
+            }
+        }
+        if (max <= 4) {
+            return 4;
+        } else if (max <= 8) {
+            return 3;
+        }
+        return 2;
+    }
+
+    private static void rankGrid(Context ctx, LinearLayout body, final List<Node> roots,
+                                 final List<Node> items, int depth, final Runnable save) {
+        if (items.isEmpty()) {
+            return;
+        }
+        int cols = rankCols(items);
+        for (int start = 0; start < items.size(); start += cols) {
+            LinearLayout line = new LinearLayout(ctx);
+            line.setOrientation(LinearLayout.HORIZONTAL);
+            line.setGravity(Gravity.CENTER_VERTICAL);
+            line.setPadding(dp(ctx, 4 + depth * 10), dp(ctx, 1), dp(ctx, 4), dp(ctx, 1));
+            for (int k = 0; k < cols; k++) {
+                int idx = start + k;
+                if (idx < items.size()) {
+                    line.addView(rankCell(ctx, roots, items.get(idx), save));
+                } else {
+                    View gap = new View(ctx);
+                    line.addView(gap, new LinearLayout.LayoutParams(0, 1, 1f));
+                }
+            }
+            body.addView(line);
+        }
+    }
+
+    /** 格子里的一项：勾选框 + 名称 */
+    private static View rankCell(Context ctx, final List<Node> roots, final Node n,
+                                 final Runnable save) {
+        LinearLayout cell = new LinearLayout(ctx);
+        cell.setOrientation(LinearLayout.HORIZONTAL);
+        cell.setGravity(Gravity.CENTER_VERTICAL);
+        cell.setClickable(true);
+        cell.setPadding(dp(ctx, 1), dp(ctx, 3), dp(ctx, 1), dp(ctx, 3));
+        cell.setLayoutParams(new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        cell.addView(checkBoxSized(ctx, n.checked, false, 15));
+
+        TextView label = new TextView(ctx);
+        label.setText(n.name);
+        label.setTextSize(10.5f);
+        label.setSingleLine(true);
+        label.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        label.setTextColor(Color.parseColor(n.checked ? COLOR_TEXT : "#FF3A3A3A"));
+        label.setPadding(dp(ctx, 3), 0, 0, 0);
+        cell.addView(label, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        cell.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                setChecked(n, !n.checked);
+                save.run();
+            }
+        });
+        return cell;
+    }
+
+    /** 整行的一项：父项或子项，带 (已勾/总数) */
+    private static View rankRow(Context ctx, final List<Node> roots, final Node n, int depth,
+                                final boolean isSectionTitle, final Runnable save) {
+        LinearLayout row = new LinearLayout(ctx);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(ctx, 4 + depth * 12), dp(ctx, 5), dp(ctx, 4), dp(ctx, 5));
+        row.setClickable(true);
+
+        if (isSectionTitle) {
+            GradientDrawable bg = new GradientDrawable();
+            bg.setColor(Color.parseColor("#FFF1F7F2"));
+            bg.setCornerRadius(dp(ctx, 6));
+            row.setBackgroundDrawable(bg);
+        }
+
+        row.addView(checkBox(ctx, n.checked, n.isParent() && n.anyChecked() && !n.allChecked()));
+
+        TextView label = new TextView(ctx);
+        label.setText(n.name);
+        label.setTextSize(isSectionTitle ? 15 : (n.isParent() ? 13.5f : 13));
+        label.setTextColor(Color.parseColor(n.checked ? COLOR_TEXT : "#FF3A3A3A"));
+        label.setTypeface(isSectionTitle || n.isParent()
+                ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
+        label.setPadding(dp(ctx, 8), 0, 0, 0);
+        row.addView(label, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        if (n.isParent()) {
+            int c = 0;
+            for (int i = 0; i < n.children.size(); i++) {
+                if (n.children.get(i).anyChecked()) {
+                    c++;
+                }
+            }
+            TextView cnt = new TextView(ctx);
+            cnt.setText("(" + c + "/" + n.children.size() + ")");
+            cnt.setTextSize(11.5f);
+            cnt.setTextColor(Color.parseColor(COLOR_MUTED));
+            row.addView(cnt);
+        }
+
+        row.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                setChecked(n, !n.checked);
+                save.run();
+            }
+        });
+        return row;
+    }
+
+    /** 勾选状态：按索引路径存取，重名也不会串 */
+    private static List<String> splitPaths(String raw) {
+        List<String> out = new ArrayList<String>();
+        if (raw == null || raw.length() == 0) {
+            return out;
+        }
+        String[] parts = raw.split("\\|");
+        for (int i = 0; i < parts.length; i++) {
+            if (parts[i].length() > 0) {
+                out.add(parts[i]);
+            }
+        }
+        return out;
+    }
+
+    private static String rankJoin(List<String> items) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < items.size(); i++) {
+            if (i > 0) {
+                sb.append("|");
+            }
+            sb.append(items.get(i));
+        }
+        return sb.toString();
+    }
+
+    private static void rankWalk(Node n, String prefix, List<String> out) {
+        if (!n.isParent()) {
+            if (n.checked) {
+                out.add(prefix);
+            }
+            return;
+        }
+        for (int i = 0; i < n.children.size(); i++) {
+            rankWalk(n.children.get(i), prefix + "." + i, out);
+        }
+    }
+
+    private static void rankApply(Node n, String prefix, List<String> sel) {
+        if (!n.isParent()) {
+            n.checked = sel.contains(prefix);
+            return;
+        }
+        for (int i = 0; i < n.children.size(); i++) {
+            rankApply(n.children.get(i), prefix + "." + i, sel);
+        }
+    }
+
+    /** 父项的勾选状态由子项算出来 */
+    private static void rankFix(Node n) {
+        if (!n.isParent()) {
+            return;
+        }
+        for (int i = 0; i < n.children.size(); i++) {
+            rankFix(n.children.get(i));
+        }
+        n.checked = n.allChecked();
     }
 
     // ======================= 活动 =======================
 
-    public static void renderActivity(Context ctx, LinearLayout box) {
+    /** 活动页：目前只有领地征讨，做成和日常页一样的勾选框，后续再往里加 */
+    public static void renderActivity(Context ctx, final LinearLayout box) {
         box.removeAllViews();
+        final SharedPreferences sp = ctx.getSharedPreferences(SP_CFG, Context.MODE_PRIVATE);
 
         box.addView(pageTitle(ctx, "活动"));
-        box.addView(caption(ctx, "目前开放 1 个活动"));
 
         LinearLayout card = card(ctx);
-        card.addView(rowTitle(ctx, "领地征讨", "开放中"));
-        card.addView(body(ctx, "玩法：进入领地征讨界面，按次数挑战，结束后领取结算奖励。", false));
-        card.addView(body(ctx, "· 进入领地征讨\n· 按次数发起挑战\n· 领取结算奖励", false));
-        box.addView(card);
+        final boolean on = sp.getBoolean("act_lingdi", false);
 
-        box.addView(hint(ctx, "更多活动开放后在这里补充。"));
+        LinearLayout row = new LinearLayout(ctx);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setClickable(true);
+        row.setPadding(dp(ctx, 4), dp(ctx, 8), dp(ctx, 4), dp(ctx, 8));
+        row.addView(checkBox(ctx, on, false));
+
+        TextView label = new TextView(ctx);
+        label.setText("领地征讨");
+        label.setTextSize(13.5f);
+        label.setTextColor(Color.parseColor(on ? COLOR_TEXT : "#FF3A3A3A"));
+        label.setPadding(dp(ctx, 8), 0, 0, 0);
+        row.addView(label, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        row.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                sp.edit().putBoolean("act_lingdi", !sp.getBoolean("act_lingdi", false)).apply();
+                renderActivity(ctx, box);
+            }
+        });
+
+        card.addView(row);
+        box.addView(card);
     }
 
     // ======================= 小部件 =======================
