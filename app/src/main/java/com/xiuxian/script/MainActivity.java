@@ -73,6 +73,9 @@ public class MainActivity extends Activity {
         });
         refreshGameLine();
 
+        // 四个标签页：脚本 / 日常 / 仙榜 / 活动
+        setupTabs();
+
         Button btnScan = (Button) findViewById(R.id.btn_scan);
         btnScan.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -1141,6 +1144,64 @@ public class MainActivity extends Activity {
         }
         // 导出完顺手复制一份，双保险
         copyLogToClipboard();
+    }
+
+    // ================= 四个标签页 =================
+
+    /** 当前选中的标签序号：0 脚本 / 1 日常 / 2 仙榜 / 3 活动 */
+    private int curTab = 0;
+    private View[] tabPages;
+    private Button[] tabButtons;
+
+    private void setupTabs() {
+        tabButtons = new Button[]{
+                (Button) findViewById(R.id.tab_script),
+                (Button) findViewById(R.id.tab_daily),
+                (Button) findViewById(R.id.tab_rank),
+                (Button) findViewById(R.id.tab_activity)
+        };
+        tabPages = new View[]{
+                findViewById(R.id.page_script),
+                findViewById(R.id.page_daily),
+                findViewById(R.id.page_rank),
+                findViewById(R.id.page_activity)
+        };
+        for (int i = 0; i < tabButtons.length; i++) {
+            final int idx = i;
+            if (tabButtons[i] == null) continue;
+            tabButtons[i].setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    switchTab(idx);
+                }
+            });
+        }
+        switchTab(0);
+    }
+
+    private void switchTab(int idx) {
+        curTab = idx;
+        for (int i = 0; i < tabPages.length; i++) {
+            if (tabPages[i] == null) continue;
+            tabPages[i].setVisibility(i == idx ? View.VISIBLE : View.GONE);
+            if (tabButtons[i] != null) {
+                tabButtons[i].setTextColor(i == idx ? 0xFF1F1F1F : 0xFF8A8A8A);
+                tabButtons[i].setTypeface(null, i == idx
+                        ? android.graphics.Typeface.BOLD : android.graphics.Typeface.NORMAL);
+            }
+        }
+        // 切到哪个页就现算哪个页，保证数据是最新的
+        try {
+            if (idx == 1) {
+                Pages.renderDaily(this, (LinearLayout) findViewById(R.id.box_daily));
+            } else if (idx == 2) {
+                Pages.renderRank(this, (LinearLayout) findViewById(R.id.box_rank));
+            } else if (idx == 3) {
+                Pages.renderActivity(this, (LinearLayout) findViewById(R.id.box_activity));
+            }
+        } catch (Throwable t) {
+            Logger.e("页面渲染失败: " + t);
+        }
     }
 
     private void toast(String msg) {
