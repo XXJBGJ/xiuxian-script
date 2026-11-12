@@ -265,7 +265,8 @@ public class FloatWindow {
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                        | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                        | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 android.graphics.PixelFormat.TRANSLUCENT);
         // 改成顶部对齐：y 越大越往下，手指往下拖窗口就往下走，
         // 不再需要用「底部对齐 + y 取反」这种容易搞反的写法。
@@ -375,18 +376,19 @@ public class FloatWindow {
             if (h <= 0) {
                 h = dpf(60);
             }
-            int maxX = Math.max(0, wh[0] - w);
-            int maxY = Math.max(0, wh[1] - h);
-            if (lp.x < 0) {
-                lp.x = 0;
+            // 与悬浮球同标准：四个方向都允许移出屏幕，
+            // 只在屏幕内保留一小块（20dp）露出来，随时能再拖回去。
+            int peekX = Math.min(dpf(20), Math.max(dpf(10), w / 3));
+            int peekY = Math.min(dpf(20), Math.max(dpf(10), h / 3));
+            int minX = peekX - w;
+            int maxX = wh[0] - peekX;
+            int minY = peekY - h;
+            int maxY = wh[1] - peekY;
+            if (lp.x < minX) {
+                lp.x = minX;
             }
             if (lp.x > maxX) {
                 lp.x = maxX;
-            }
-            // 允许整体上移越过屏幕顶部，只保留下沿露在外面
-            int minY = -(h - dpf(20));
-            if (minY > 0) {
-                minY = 0;
             }
             if (lp.y < minY) {
                 lp.y = minY;
