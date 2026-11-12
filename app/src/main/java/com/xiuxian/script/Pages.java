@@ -1,6 +1,7 @@
 package com.xiuxian.script;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -9,25 +10,19 @@ import android.view.View;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
-
-import java.io.ByteArrayOutputStream;
-import java.io.InputStream;
-import java.text.SimpleDateFormat;
 import java.util.ArrayList;
-import java.util.Date;
 import java.util.List;
-import java.util.Locale;
 
 /**
  * 日常 / 仙榜 / 活动 三个页面的内容渲染。
  *
- * 数据来源优先级：
- *   1. assets/pages_data.json（存在就用它，方便以后只改 JSON 不改代码）
- *   2. 代码里内置的默认数据（下面 DEFAULT_* 常量）
+ * 日常：上下两大区（凡间 / 上界），每个模块前一个勾选框，
+ *       勾父项会把下面所有子项一起勾上，勾子项会把父项带亮；
+ *       勾选结果存在本机，下次进来还是上次的选择。
+ * 仙榜：限时活动 / 主榜 / 释放榜 三个区，具体内容稍后补。
+ * 活动：目前只有「领地征讨」。
  *
- * 全部用代码搭界面，不新增布局文件，避免多文件提交出错。
+ * 全部用代码搭界面，不新增布局文件。
  */
 public class Pages {
 
@@ -39,215 +34,387 @@ public class Pages {
     private static final String COLOR_CARD = "#FFFFFFFF";
     private static final String COLOR_SOFT = "#FFF7F7F7";
 
-    // ======================= 内置默认数据 =======================
+    /** 日常勾选状态的存储名 */
+    private static final String SP_DAILY = "daily_sel";
 
-    /** 日常：项目分步规则与闭环进度（与 runner 的分步配置一一对应） */
-    private static final String DEFAULT_DAILY = "{\n"
-            + "  \"updated\": \"2026-11-12\",\n"
-            + "  \"tasks\": [\n"
-            + "    {\"id\":\"06\",\"module\":\"凡间\",\"title\":\"06 演武（条件判断版）\",\"status\":\"done\",\"note\":\"22 步条件版已真机跑通，兑换段闭环；斗法段战斗弹窗模板待补\"},\n"
-            + "    {\"id\":\"04\",\"module\":\"凡间\",\"title\":\"04 坊市（条件判断版）\",\"status\":\"pending\",\"note\":\"骨架与可达锚点已回填，待真机闭环；聚宝盆/争夺胜负模板待补\"},\n"
-            + "    {\"id\":\"05\",\"module\":\"凡间\",\"title\":\"05 行囊（条件判断版）\",\"status\":\"pending\",\"note\":\"未真机闭环，单件出售段留手动\"},\n"
-            + "    {\"id\":\"07\",\"module\":\"凡间\",\"title\":\"07 慕仙境（条件判断版）\",\"status\":\"pending\",\"note\":\"待复验二次膜拜/瞻仰刷新分支与获得时间弹窗\"},\n"
-            + "    {\"id\":\"08\",\"module\":\"凡间\",\"title\":\"08 宗门（条件判断版）\",\"status\":\"pending\",\"note\":\"3 类未触发界面模板待补：确定/开始练功/关闭传功室\"},\n"
-            + "    {\"id\":\"09\",\"module\":\"凡间\",\"title\":\"09 修炼（条件判断版）\",\"status\":\"pending\",\"note\":\"8 类弹窗模板待触发后补；纳气点位顺序未核\"},\n"
-            + "    {\"id\":\"10\",\"module\":\"凡间\",\"title\":\"10 吐纳（条件判断版）\",\"status\":\"pending\",\"note\":\"待真机复核闭环\"},\n"
-            + "    {\"id\":\"11\",\"module\":\"仙盟\",\"title\":\"11 进入仙盟（条件判断版）\",\"status\":\"pending\",\"note\":\"骨架已落地，模板待真机抓\"},\n"
-            + "    {\"id\":\"12\",\"module\":\"仙盟\",\"title\":\"12 建设（条件判断版）\",\"status\":\"pending\",\"note\":\"骨架已落地，模板待真机抓\"},\n"
-            + "    {\"id\":\"13\",\"module\":\"仙盟\",\"title\":\"13 排行榜（条件判断版）\",\"status\":\"pending\",\"note\":\"骨架已落地，模板待真机抓\"},\n"
-            + "    {\"id\":\"14\",\"module\":\"仙盟\",\"title\":\"14 仙盟事务（条件判断版）\",\"status\":\"pending\",\"note\":\"7 步参数已读全，7 个占位模板待抓\"},\n"
-            + "    {\"id\":\"15\",\"module\":\"仙盟\",\"title\":\"15 宴会（条件判断版）\",\"status\":\"pending\",\"note\":\"4 步参数已读全，4 个占位模板待抓\"},\n"
-            + "    {\"id\":\"16\",\"module\":\"仙盟\",\"title\":\"16 除魔（条件判断版）\",\"status\":\"pending\",\"note\":\"8 步参数已读全，7 个占位模板待抓\"},\n"
-            + "    {\"id\":\"17\",\"module\":\"仙盟\",\"title\":\"17 天宫幻境（条件判断版）\",\"status\":\"pending\",\"note\":\"8 步参数已读全，5 个占位模板待抓；排位在事务与宴会之间\"}\n"
-            + "  ]\n"
-            + "}";
+    // ======================= 日常：任务树 =======================
 
-    /** 仙榜：游戏内各榜单名次（entries 为空表示还没采集） */
-    private static final String DEFAULT_RANK = "{\n"
-            + "  \"updated\": \"\",\n"
-            + "  \"boards\": [\n"
-            + "    {\"name\":\"等级榜\",\"metric\":\"修为\",\"entries\":[],\"hint\":\"尚未采集：进入游戏「仙榜」页后补齐角色名与修为\"},\n"
-            + "    {\"name\":\"战力榜\",\"metric\":\"战力\",\"entries\":[],\"hint\":\"尚未采集\"},\n"
-            + "    {\"name\":\"仙盟榜\",\"metric\":\"仙盟贡献\",\"entries\":[],\"hint\":\"尚未采集：分步「13 排行榜」闭环后可回填\"}\n"
-            + "  ]\n"
-            + "}";
+    /** 一个可勾选的节点：父项/子项同一套结构 */
+    static class Node {
+        String path = "";
+        String name = "";
+        boolean checked = false;
+        final List<Node> children = new ArrayList<Node>();
 
-    /** 活动：按起止日期自动分 进行中 / 未开始 / 已结束 */
-    private static final String DEFAULT_ACTIVITY = "{\n"
-            + "  \"activities\": [\n"
-            + "    {\"name\":\"每日签到\",\"start\":\"2026-11-01\",\"end\":\"2026-12-31\",\"desc\":\"每日登录领取签到奖励。\",\"tasks\":[\"打开签到界面\",\"领取签到奖励\"]},\n"
-            + "    {\"name\":\"除魔\",\"start\":\"2026-11-01\",\"end\":\"2026-11-30\",\"desc\":\"对应分步 16 除魔，先完成今日次数再结算。\",\"tasks\":[\"进入除魔界面\",\"按次数挑战\",\"领取结算奖励\"]},\n"
-            + "    {\"name\":\"天宫幻境\",\"start\":\"2026-11-01\",\"end\":\"2026-11-30\",\"desc\":\"对应分步 17 天宫幻境，层数推进后领奖。\",\"tasks\":[\"进入天宫幻境\",\"推进层数\"]}\n"
-            + "  ]\n"
-            + "}";
+        boolean isParent() {
+            return !children.isEmpty();
+        }
 
-    // ======================= 对外入口 =======================
+        /** 整棵子树全部勾上 */
+        boolean allChecked() {
+            if (!isParent()) {
+                return checked;
+            }
+            for (int i = 0; i < children.size(); i++) {
+                if (!children.get(i).allChecked()) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /** 子树里有没有任意一项勾上 */
+        boolean anyChecked() {
+            if (checked) {
+                return true;
+            }
+            for (int i = 0; i < children.size(); i++) {
+                if (children.get(i).anyChecked()) {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+
+    private static Node node(String name, Node... kids) {
+        Node x = new Node();
+        x.name = name;
+        for (int i = 0; i < kids.length; i++) {
+            x.children.add(kids[i]);
+        }
+        return x;
+    }
+
+    /**
+     * 构建日常任务的两大区。
+     * 凡间：坊市、行囊、演武、慕仙境、宗门、吐纳、修炼、仙盟、洞府、闯荡
+     *   仙盟 → 建造、排行榜、仙盟事务、天宫幻境、宴会、除魔
+     *   洞府 → 灵山、酒肆、结缘、器室、丹炉、仙界聘书
+     *   闯荡 → 仙缘、出窍、寻宝、福地、凶兽
+     * 上界：仙都、天庭、门派、云游、刑天战场、万古遗迹、万仙盟
+     *   仙都 → 遗迹、论道、仙界灵宠、游历、圣地寻访
+     *   门派 → 集市、驯兽园、掌门大厅、门派历练
+     *   云游 → 灵契、九幽、锁妖塔、小世界、虚空异变
+     */
+    private static List<Node> buildDailyTree() {
+        List<Node> roots = new ArrayList<Node>();
+
+        Node fanjian = node("凡间",
+                node("坊市"),
+                node("行囊"),
+                node("演武"),
+                node("慕仙境"),
+                node("宗门"),
+                node("吐纳"),
+                node("修炼"),
+                node("仙盟",
+                        node("建造"), node("排行榜"), node("仙盟事务"),
+                        node("天宫幻境"), node("宴会"), node("除魔")),
+                node("洞府",
+                        node("灵山"), node("酒肆"), node("结缘"),
+                        node("器室"), node("丹炉"), node("仙界聘书")),
+                node("闯荡",
+                        node("仙缘"), node("出窍"), node("寻宝"),
+                        node("福地"), node("凶兽")));
+
+        Node shangjie = node("上界",
+                node("仙都",
+                        node("遗迹"), node("论道"), node("仙界灵宠"),
+                        node("游历"), node("圣地寻访")),
+                node("天庭"),
+                node("门派",
+                        node("集市"), node("驯兽园"), node("掌门大厅"), node("门派历练")),
+                node("云游",
+                        node("灵契"), node("九幽"), node("锁妖塔"),
+                        node("小世界"), node("虚空异变")),
+                node("刑天战场"),
+                node("万古遗迹"),
+                node("万仙盟"));
+
+        roots.add(fanjian);
+        roots.add(shangjie);
+        return roots;
+    }
+
+    /** 给每个节点算出唯一路径，作为勾选状态的存储键 */
+    private static void assignPath(Node n, String parent) {
+        n.path = parent.isEmpty() ? n.name : (parent + "/" + n.name);
+        for (int i = 0; i < n.children.size(); i++) {
+            assignPath(n.children.get(i), n.path);
+        }
+    }
+
+    private static void collect(Node n, List<Node> out) {
+        out.add(n);
+        for (int i = 0; i < n.children.size(); i++) {
+            collect(n.children.get(i), out);
+        }
+    }
+
+    /** 从本机读回上次的勾选状态 */
+    private static void loadState(SharedPreferences sp, List<Node> roots) {
+        List<Node> all = new ArrayList<Node>();
+        for (int i = 0; i < roots.size(); i++) {
+            collect(roots.get(i), all);
+        }
+        for (int i = 0; i < all.size(); i++) {
+            Node n = all.get(i);
+            n.checked = sp.getBoolean(n.path, false);
+        }
+        // 父项没有显式存过状态时，按子项推一遍
+        for (int i = 0; i < roots.size(); i++) {
+            normalize(roots.get(i));
+        }
+    }
+
+    /** 让父项的勾选状态跟着子项走 */
+    private static void normalize(Node n) {
+        if (!n.isParent()) {
+            return;
+        }
+        for (int i = 0; i < n.children.size(); i++) {
+            normalize(n.children.get(i));
+        }
+        n.checked = n.allChecked();
+    }
+
+    private static void saveState(SharedPreferences sp, List<Node> roots) {
+        List<Node> all = new ArrayList<Node>();
+        for (int i = 0; i < roots.size(); i++) {
+            collect(roots.get(i), all);
+        }
+        SharedPreferences.Editor e = sp.edit();
+        for (int i = 0; i < all.size(); i++) {
+            e.putBoolean(all.get(i).path, all.get(i).checked);
+        }
+        e.apply();
+    }
+
+    /** 勾一个节点：自己 + 所有子项一起变；再往上把父项状态带对 */
+    private static void setChecked(List<Node> roots, Node target, boolean checked) {
+        applyDown(target, checked);
+        for (int i = 0; i < roots.size(); i++) {
+            normalize(roots.get(i));
+        }
+    }
+
+    private static void applyDown(Node n, boolean checked) {
+        n.checked = checked;
+        for (int i = 0; i < n.children.size(); i++) {
+            applyDown(n.children.get(i), checked);
+        }
+    }
 
     public static void renderDaily(Context ctx, LinearLayout box) {
         box.removeAllViews();
-        JSONObject root = loadJson(ctx, "daily", DEFAULT_DAILY);
-        if (root == null) {
-            box.addView(hint(ctx, "日常任务数据读取失败"));
-            return;
+        final List<Node> roots = buildDailyTree();
+        for (int i = 0; i < roots.size(); i++) {
+            assignPath(roots.get(i), "");
         }
-        JSONArray tasks = root.optJSONArray("tasks");
+        final SharedPreferences sp = ctx.getSharedPreferences(SP_DAILY, Context.MODE_PRIVATE);
+        loadState(sp, roots);
 
         box.addView(pageTitle(ctx, "日常"));
-        box.addView(caption(ctx, "修仙分步规则与闭环进度，共 "
-                + (tasks == null ? 0 : tasks.length()) + " 条"));
+        box.addView(caption(ctx, "勾选要执行的任务；勾父项会把下面所有子项一起勾上。选择会自动保存。"));
 
-        if (tasks == null || tasks.length() == 0) {
-            box.addView(hint(ctx, "还没有日常任务"));
-            return;
+        int total = 0;
+        int sel = 0;
+        List<Node> all = new ArrayList<Node>();
+        for (int i = 0; i < roots.size(); i++) {
+            collect(roots.get(i), all);
         }
-
-        int done = 0;
-        for (int i = 0; i < tasks.length(); i++) {
-            JSONObject t = tasks.optJSONObject(i);
-            if (t == null) continue;
-            if ("done".equals(t.optString("status"))) done++;
-        }
-        box.addView(summary(ctx, "已完成 " + done + " / " + tasks.length()
-                + "　（" + pct(done, tasks.length()) + "）"));
-
-        String lastModule = "";
-        for (int i = 0; i < tasks.length(); i++) {
-            JSONObject t = tasks.optJSONObject(i);
-            if (t == null) continue;
-            String module = t.optString("module", "");
-            if (!module.equals(lastModule)) {
-                lastModule = module;
-                box.addView(moduleHeader(ctx, module.isEmpty() ? "其他" : module));
+        for (int i = 0; i < all.size(); i++) {
+            total++;
+            if (all.get(i).checked) {
+                sel++;
             }
-            box.addView(taskCard(ctx,
-                    t.optString("title", "-"),
-                    t.optString("note", ""),
-                    t.optString("status", "pending")));
         }
+        box.addView(summary(ctx, "已勾选 " + sel + " / " + total + " 项任务"));
+
+        for (int i = 0; i < roots.size(); i++) {
+            box.addView(buildSection(ctx, box, sp, roots, roots.get(i), 0));
+        }
+
+        box.addView(hint(ctx, "说明：勾选只记录要跑哪些任务，具体每一步的点位与等待时间按任务逐条补齐。"));
     }
+
+    /** 一个区（凡间 / 上界）：标题行 + 下面所有子模块 */
+    private static View buildSection(Context ctx, final LinearLayout pageBox,
+                                     final SharedPreferences sp, final List<Node> roots,
+                                     final Node section, int depth) {
+        LinearLayout card = card(ctx);
+        card.addView(buildRow(ctx, pageBox, sp, roots, section, depth, true));
+        for (int i = 0; i < section.children.size(); i++) {
+            card.addView(buildNodeView(ctx, pageBox, sp, roots, section.children.get(i), depth + 1));
+        }
+        return card;
+    }
+
+    /** 递归渲染一个节点：自己一行，有子项就往里缩进 */
+    private static View buildNodeView(Context ctx, final LinearLayout pageBox,
+                                      final SharedPreferences sp, final List<Node> roots,
+                                      final Node n, int depth) {
+        if (!n.isParent()) {
+            return buildRow(ctx, pageBox, sp, roots, n, depth, false);
+        }
+        LinearLayout box = new LinearLayout(ctx);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.addView(buildRow(ctx, pageBox, sp, roots, n, depth, false));
+        for (int i = 0; i < n.children.size(); i++) {
+            box.addView(buildNodeView(ctx, pageBox, sp, roots, n.children.get(i), depth + 1));
+        }
+        return box;
+    }
+
+    /** 一行：勾选框 + 名称 */
+    private static View buildRow(Context ctx, final LinearLayout pageBox,
+                                 final SharedPreferences sp, final List<Node> roots,
+                                 final Node n, int depth, final boolean isSectionTitle) {
+        LinearLayout row = new LinearLayout(ctx);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(ctx, 4 + depth * 12), dp(ctx, 5), dp(ctx, 4), dp(ctx, 5));
+        row.setClickable(true);
+
+        if (isSectionTitle) {
+            GradientDrawable bg = new GradientDrawable();
+            bg.setColor(Color.parseColor("#FFF1F7F2"));
+            bg.setCornerRadius(dp(ctx, 6));
+            row.setBackgroundDrawable(bg);
+        }
+
+        row.addView(checkBox(ctx, n.checked, n.isParent() && n.anyChecked() && !n.allChecked()));
+
+        TextView label = new TextView(ctx);
+        label.setText(n.name);
+        label.setTextSize(isSectionTitle ? 15 : (n.isParent() ? 13.5f : 13));
+        label.setTextColor(Color.parseColor(n.checked ? COLOR_TEXT : "#FF3A3A3A"));
+        label.setTypeface(isSectionTitle || n.isParent()
+                ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
+        label.setPadding(dp(ctx, 8), 0, 0, 0);
+        row.addView(label, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        if (n.isParent()) {
+            int c = 0;
+            for (int i = 0; i < n.children.size(); i++) {
+                if (n.children.get(i).anyChecked()) {
+                    c++;
+                }
+            }
+            TextView cnt = new TextView(ctx);
+            cnt.setText("(" + c + "/" + n.children.size() + ")");
+            cnt.setTextSize(11.5f);
+            cnt.setTextColor(Color.parseColor(COLOR_MUTED));
+            row.addView(cnt);
+        }
+
+        row.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                boolean to = !n.checked;
+                setChecked(roots, n, to);
+                saveState(sp, roots);
+                renderDaily(ctx, pageBox);
+            }
+        });
+        return row;
+    }
+
+    /** 方框勾选：勾上显示 √，没勾是空白框；半勾用灰色 √ */
+    private static TextView checkBox(Context ctx, boolean checked, boolean partial) {
+        TextView v = new TextView(ctx);
+        v.setText(checked ? "√" : "");
+        v.setTextSize(12);
+        v.setGravity(Gravity.CENTER);
+        v.setTextColor(Color.parseColor(partial ? COLOR_MUTED : COLOR_OK));
+        v.setTypeface(Typeface.DEFAULT_BOLD);
+
+        GradientDrawable d = new GradientDrawable();
+        d.setShape(GradientDrawable.RECTANGLE);
+        d.setColor(Color.parseColor(checked ? "#FFF1F7F2" : "#FFFFFFFF"));
+        d.setCornerRadius(dp(ctx, 3));
+        int stroke = Math.max(1, dp(ctx, 1));
+        d.setStroke(stroke, Color.parseColor(checked ? COLOR_OK : "#FFB8BDC4"));
+        v.setBackgroundDrawable(d);
+
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(ctx, 18), dp(ctx, 18));
+        v.setLayoutParams(lp);
+        return v;
+    }
+
+    // ======================= 仙榜 =======================
 
     public static void renderRank(Context ctx, LinearLayout box) {
         box.removeAllViews();
-        JSONObject root = loadJson(ctx, "rank", DEFAULT_RANK);
-        if (root == null) {
-            box.addView(hint(ctx, "仙榜数据读取失败"));
-            return;
-        }
-        String updated = root.optString("updated", "");
+
         box.addView(pageTitle(ctx, "仙榜"));
-        box.addView(caption(ctx, updated.isEmpty() ? "尚未采集名次" : "更新于 " + updated));
+        box.addView(caption(ctx, "按从上到下三个区：限时活动 → 主榜 → 释放榜"));
 
-        JSONArray boards = root.optJSONArray("boards");
-        if (boards == null || boards.length() == 0) {
-            box.addView(hint(ctx, "还没有榜单定义"));
-            return;
-        }
-        for (int i = 0; i < boards.length(); i++) {
-            JSONObject b = boards.optJSONObject(i);
-            if (b == null) continue;
-            String name = b.optString("name", "榜单");
-            String metric = b.optString("metric", "");
-            JSONArray entries = b.optJSONArray("entries");
-
-            LinearLayout card = card(ctx);
-            card.addView(rowTitle(ctx, name, entries == null ? "0 条" : entries.length() + " 条"));
-            if (entries == null || entries.length() == 0) {
-                card.addView(hint(ctx, b.optString("hint", "尚未采集到数据")));
-            } else {
-                card.addView(tableHead(ctx, metric.isEmpty() ? "数值" : metric));
-                for (int k = 0; k < entries.length(); k++) {
-                    JSONObject e = entries.optJSONObject(k);
-                    if (e == null) continue;
-                    card.addView(rankRow(ctx, k + 1,
-                            e.optString("name", "-"),
-                            e.optString("score", "-")));
-                }
-            }
-            box.addView(card);
-        }
+        box.addView(rankSection(ctx, "限时活动",
+                "名称、起止时间、当前名次与奖励稍后更新"));
+        box.addView(rankSection(ctx, "主榜",
+                "榜单名称与名次稍后更新"));
+        box.addView(rankSection(ctx, "释放榜",
+                "释放榜名次稍后更新"));
     }
+
+    /** 仙榜的一个区：标题 + 数据表（暂时空，等具体内容） */
+    private static View rankSection(Context ctx, String title, String hintText) {
+        LinearLayout card = card(ctx);
+        card.addView(rowTitle(ctx, title, "待补充"));
+
+        LinearLayout head = new LinearLayout(ctx);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setPadding(0, dp(ctx, 6), 0, dp(ctx, 2));
+        head.addView(cell(ctx, "名次", 0.18f, true));
+        head.addView(cell(ctx, "角色", 0.42f, true));
+        head.addView(cell(ctx, "数值", 0.4f, true));
+        card.addView(head);
+
+        for (int i = 1; i <= 3; i++) {
+            LinearLayout r = new LinearLayout(ctx);
+            r.setOrientation(LinearLayout.HORIZONTAL);
+            r.setPadding(0, dp(ctx, 3), 0, dp(ctx, 3));
+            r.addView(cell(ctx, String.valueOf(i), 0.18f, false));
+            r.addView(cell(ctx, "—", 0.42f, false));
+            r.addView(cell(ctx, "—", 0.4f, false));
+            card.addView(r);
+        }
+        card.addView(hint(ctx, hintText));
+        return card;
+    }
+
+    private static TextView cell(Context ctx, String text, float weight, boolean head) {
+        TextView v = new TextView(ctx);
+        v.setText(text);
+        v.setTextSize(head ? 11.5f : 12.5f);
+        v.setTextColor(Color.parseColor(head ? COLOR_MUTED : COLOR_TEXT));
+        if (head) {
+            v.setTypeface(Typeface.DEFAULT_BOLD);
+        }
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, weight);
+        v.setLayoutParams(lp);
+        return v;
+    }
+
+    // ======================= 活动 =======================
 
     public static void renderActivity(Context ctx, LinearLayout box) {
         box.removeAllViews();
-        JSONObject root = loadJson(ctx, "activity", DEFAULT_ACTIVITY);
-        if (root == null) {
-            box.addView(hint(ctx, "活动数据读取失败"));
-            return;
-        }
-        JSONArray acts = root.optJSONArray("activities");
-        String today = new SimpleDateFormat("yyyy-MM-dd", Locale.CHINA).format(new Date());
 
         box.addView(pageTitle(ctx, "活动"));
-        box.addView(caption(ctx, "今天 " + today + "　按起止日期自动分组"));
+        box.addView(caption(ctx, "目前开放 1 个活动"));
 
-        if (acts == null || acts.length() == 0) {
-            box.addView(hint(ctx, "暂无活动"));
-            return;
-        }
-
-        List<JSONObject> running = new ArrayList<JSONObject>();
-        List<JSONObject> upcoming = new ArrayList<JSONObject>();
-        List<JSONObject> ended = new ArrayList<JSONObject>();
-        for (int i = 0; i < acts.length(); i++) {
-            JSONObject a = acts.optJSONObject(i);
-            if (a == null) continue;
-            String start = a.optString("start", "");
-            String end = a.optString("end", "");
-            if (!end.isEmpty() && end.compareTo(today) < 0) {
-                ended.add(a);
-            } else if (!start.isEmpty() && start.compareTo(today) > 0) {
-                upcoming.add(a);
-            } else {
-                running.add(a);
-            }
-        }
-
-        addGroup(ctx, box, "进行中", running, COLOR_OK);
-        addGroup(ctx, box, "未开始", upcoming, COLOR_WARN);
-        addGroup(ctx, box, "已结束", ended, COLOR_MUTED);
-    }
-
-    private static void addGroup(Context ctx, LinearLayout box, String title,
-                                 List<JSONObject> list, String color) {
-        if (list.isEmpty()) return;
-        LinearLayout head = new LinearLayout(ctx);
-        head.setOrientation(LinearLayout.HORIZONTAL);
-        head.setGravity(Gravity.CENTER_VERTICAL);
-        head.setPadding(0, dp(ctx, 10), 0, dp(ctx, 6));
-        TextView t = new TextView(ctx);
-        t.setText(title);
-        t.setTextSize(14);
-        t.setTypeface(Typeface.DEFAULT_BOLD);
-        t.setTextColor(Color.parseColor(color));
-        head.addView(t);
-        TextView c = new TextView(ctx);
-        c.setText("　" + list.size() + " 个");
-        c.setTextSize(12);
-        c.setTextColor(Color.parseColor(COLOR_MUTED));
-        head.addView(c);
-        box.addView(head);
-
-        for (int i = 0; i < list.size(); i++) {
-            box.addView(activityCard(ctx, list.get(i), "已结束".equals(title)));
-        }
-    }
-
-    private static View activityCard(Context ctx, JSONObject a, boolean dim) {
         LinearLayout card = card(ctx);
-        card.addView(rowTitle(ctx, a.optString("name", "未命名活动"),
-                a.optString("start", "?") + " ~ " + a.optString("end", "?")));
-        String desc = a.optString("desc", "");
-        if (!desc.isEmpty()) card.addView(body(ctx, desc, dim));
-        JSONArray tasks = a.optJSONArray("tasks");
-        if (tasks != null) {
-            StringBuilder sb = new StringBuilder();
-            for (int i = 0; i < tasks.length(); i++) {
-                if (sb.length() > 0) sb.append('\n');
-                sb.append("· ").append(tasks.optString(i, ""));
-            }
-            if (sb.length() > 0) card.addView(body(ctx, sb.toString(), dim));
-        }
-        return card;
+        card.addView(rowTitle(ctx, "领地征讨", "开放中"));
+        card.addView(body(ctx, "玩法：进入领地征讨界面，按次数挑战，结束后领取结算奖励。", false));
+        card.addView(body(ctx, "· 进入领地征讨\n· 按次数发起挑战\n· 领取结算奖励", false));
+        box.addView(card);
+
+        box.addView(hint(ctx, "更多活动开放后在这里补充。"));
     }
 
     // ======================= 小部件 =======================
@@ -280,21 +447,11 @@ public class Pages {
         return v;
     }
 
-    private static TextView moduleHeader(Context ctx, String text) {
-        TextView v = new TextView(ctx);
-        v.setText(text);
-        v.setTextSize(13);
-        v.setTypeface(Typeface.DEFAULT_BOLD);
-        v.setTextColor(Color.parseColor(COLOR_MUTED));
-        v.setPadding(0, dp(ctx, 8), 0, dp(ctx, 4));
-        return v;
-    }
-
     private static LinearLayout card(Context ctx) {
         LinearLayout box = new LinearLayout(ctx);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setBackgroundDrawable(rounded(COLOR_CARD, COLOR_LINE));
-        box.setPadding(dp(ctx, 12), dp(ctx, 10), dp(ctx, 12), dp(ctx, 10));
+        box.setBackgroundDrawable(rounded(ctx, COLOR_CARD, COLOR_LINE));
+        box.setPadding(dp(ctx, 10), dp(ctx, 8), dp(ctx, 10), dp(ctx, 8));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         lp.bottomMargin = dp(ctx, 8);
@@ -304,7 +461,7 @@ public class Pages {
 
     private static TextView rowTitle(Context ctx, String title, String right) {
         TextView v = new TextView(ctx);
-        v.setText(title + "　" + right);
+        v.setText(title + "  " + right);
         v.setTextSize(14);
         v.setTypeface(Typeface.DEFAULT_BOLD);
         v.setTextColor(Color.parseColor(COLOR_TEXT));
@@ -320,82 +477,20 @@ public class Pages {
         return v;
     }
 
-    private static TextView tableHead(Context ctx, String metric) {
-        TextView v = new TextView(ctx);
-        v.setText("名次　　角色　　　　　　" + metric);
-        v.setTextSize(11.5f);
-        v.setTextColor(Color.parseColor(COLOR_MUTED));
-        v.setPadding(0, dp(ctx, 4), 0, dp(ctx, 2));
-        return v;
-    }
-
-    private static TextView rankRow(Context ctx, int no, String name, String score) {
-        TextView v = new TextView(ctx);
-        v.setText(no + "　　" + name + "\n　　　　" + score);
-        v.setTextSize(13);
-        v.setTextColor(Color.parseColor(no <= 3 ? COLOR_OK : COLOR_TEXT));
-        v.setPadding(0, dp(ctx, 3), 0, dp(ctx, 3));
-        return v;
-    }
-
-    private static View taskCard(Context ctx, String title, String note, String status) {
-        LinearLayout card = new LinearLayout(ctx);
-        card.setOrientation(LinearLayout.HORIZONTAL);
-        card.setBackgroundDrawable(rounded(COLOR_SOFT, COLOR_LINE));
-        card.setPadding(dp(ctx, 10), dp(ctx, 8), dp(ctx, 10), dp(ctx, 8));
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        lp.bottomMargin = dp(ctx, 6);
-        card.setLayoutParams(lp);
-
-        LinearLayout left = new LinearLayout(ctx);
-        left.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout.LayoutParams llp = new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-        left.setLayoutParams(llp);
-
-        TextView t = new TextView(ctx);
-        t.setText(title);
-        t.setTextSize(13.5f);
-        t.setTextColor(Color.parseColor(COLOR_TEXT));
-        left.addView(t);
-
-        if (!note.isEmpty()) {
-            TextView n = new TextView(ctx);
-            n.setText(note);
-            n.setTextSize(11.5f);
-            n.setTextColor(Color.parseColor(COLOR_MUTED));
-            n.setPadding(0, dp(ctx, 2), 0, 0);
-            left.addView(n);
-        }
-        card.addView(left);
-
-        TextView badge = new TextView(ctx);
-        boolean done = "done".equals(status);
-        badge.setText(done ? "已完成" : "待闭环");
-        badge.setTextSize(11.5f);
-        badge.setTextColor(Color.parseColor(done ? COLOR_OK : COLOR_WARN));
-        badge.setPadding(dp(ctx, 6), dp(ctx, 1), dp(ctx, 6), dp(ctx, 1));
-        badge.setBackgroundDrawable(rounded(done ? "#FFEAF5EE" : "#FFFBF3E6", COLOR_LINE));
-        card.addView(badge);
-
-        return card;
-    }
-
     private static TextView hint(Context ctx, String text) {
         TextView v = new TextView(ctx);
         v.setText(text);
         v.setTextSize(12.5f);
         v.setTextColor(Color.parseColor(COLOR_MUTED));
-        v.setPadding(dp(ctx, 10), dp(ctx, 12), dp(ctx, 10), dp(ctx, 12));
-        v.setBackgroundDrawable(rounded(COLOR_SOFT, COLOR_LINE));
+        v.setPadding(dp(ctx, 10), dp(ctx, 10), dp(ctx, 10), dp(ctx, 10));
+        v.setBackgroundDrawable(rounded(ctx, COLOR_SOFT, COLOR_LINE));
         return v;
     }
 
-    private static GradientDrawable rounded(String fill, String stroke) {
+    private static GradientDrawable rounded(Context ctx, String fill, String stroke) {
         GradientDrawable d = new GradientDrawable();
         d.setShape(GradientDrawable.RECTANGLE);
-        d.setCornerRadius(8f);
+        d.setCornerRadius(dp(ctx, 8));
         d.setColor(Color.parseColor(fill));
         d.setStroke(1, Color.parseColor(stroke));
         return d;
@@ -403,34 +498,5 @@ public class Pages {
 
     private static int dp(Context ctx, float v) {
         return (int) (v * ctx.getResources().getDisplayMetrics().density + 0.5f);
-    }
-
-    private static String pct(int a, int b) {
-        if (b <= 0) return "0%";
-        return (int) (a * 100.0f / b) + "%";
-    }
-
-    // ======================= 数据读取 =======================
-
-    /** 优先读 assets/pages_data.json 的对应段，没有就用内置默认值。 */
-    private static JSONObject loadJson(Context ctx, String key, String fallback) {
-        try {
-            InputStream in = ctx.getAssets().open("pages_data.json");
-            ByteArrayOutputStream bos = new ByteArrayOutputStream();
-            byte[] buf = new byte[4096];
-            int n;
-            while ((n = in.read(buf)) > 0) bos.write(buf, 0, n);
-            in.close();
-            JSONObject all = new JSONObject(new String(bos.toByteArray(), "UTF-8"));
-            JSONObject sub = all.optJSONObject(key);
-            if (sub != null) return sub;
-        } catch (Throwable ignored) {
-            // 没有 assets 文件或解析失败，用内置默认数据
-        }
-        try {
-            return new JSONObject(fallback);
-        } catch (Throwable t) {
-            return null;
-        }
     }
 }
