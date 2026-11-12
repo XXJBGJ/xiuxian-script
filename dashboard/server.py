@@ -174,7 +174,25 @@ def _device_status():
         "game": "天途 (com.tt.spgw.qg)",
         "game_installed": True,
         "game_version": "天途 · 1.0.4",
+        "game_package": "com.tt.spgw.qg",
+        "adb_ok": os.path.isfile(ADB),
     }
+    sel = _load_selection()
+    if sel.get("package"):
+        status["game"] = "%s (%s)" % (sel.get("name") or sel["package"], sel["package"])
+        status["game_package"] = sel["package"]
+        if sel.get("version"):
+            status["game_version"] = "%s · %s" % (
+                sel.get("name") or sel["package"], sel["version"])
+    # 账号计数：取当前选中游戏名下已保存的账号
+    acc = _load_accounts().get("games", {})
+    game_key = sel.get("package") or "com.tt.spgw.qg"
+    rows = acc.get(game_key) or []
+    if rows:
+        checked = len([a for a in rows if a.get("checked", True)])
+        status["account"] = "已勾选 %d / 共 %d 个（只会跑勾选的）" % (checked, len(rows))
+    elif acc:
+        status["account"] = "当前游戏未配置账号（共 %d 个游戏有记录）" % len(acc)
     try:
         out = subprocess.run([ADB, "-s", DEVICE, "shell", "wm", "size"],
                               capture_output=True, timeout=8, stdin=subprocess.DEVNULL)
@@ -184,6 +202,207 @@ def _device_status():
     except Exception:
         pass
     return status
+
+
+# ---------------------------------------------------------------- 数据文件
+DATA_DIR = os.path.join(BASE_DIR, "data")
+
+
+def _read_data(name, default):
+    """读取 data/ 下的 JSON。缺失或损坏时返回 default，并带上状态标记。"""
+    path = os.path.join(DATA_DIR, name)
+    info = {"_missing": False, "_file": name, "data": default, "_error": ""}
+    if not os.path.isfile(path):
+        info["_missing"] = True
+        return info
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            info["data"] = json.load(f)
+    except Exception as e:
+        info["_error"] = str(e)
+    return info
+
+
+def _write_data(name, obj):
+    """原子写入 data/ 下的 JSON（先写临时文件再替换）。"""
+    os.makedirs(DATA_DIR, exist_ok=True)
+    path = os.path.join(DATA_DIR, name)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+
+def _size_text(n):
+    try:
+        n = float(n)
+    except (TypeError, ValueError):
+        return "-"
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return ("%d %s" % (n, unit)) if unit == "B" else ("%.1f %s" % (n, unit))
+        n /= 1024.0
+    return "-"
+
+
+# ---------------------------------------------------------------- ADB 辅助
+def _adb(*args, **kw):
+    """执行 adb 命令；ADB 或设备缺失时返回 (False, 错误说明)，不抛异常。"""
+    timeout = kw.get("timeout", 10)
+    if not os.path.isfile(ADB):
+        return False, "未找到 ADB：%s" % ADB
+    try:
+        out = subprocess.run(
+            [ADB, "-s", DEVICE] + list(args),
+            capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL)
+    except Exception as e:
+        return False, "ADB 执行失败：%s" % e
+    text = out.stdout.decode("utf-8", "ignore")
+    if out.returncode != 0 and not text.strip():
+        err = out.stderr.decode("utf-8", "ignore").strip()
+        return False, "ADB 返回错误：%s" % (err or "returncode=%s" % out.returncode)
+    return True, text
+
+
+# 已知游戏包名 -> 展示名（与安卓端安装包库同一批游戏）
+GAME_LABELS = {
+    "com.tt.spgw.qg": "天途",
+}
+SCRIPT_PKG = "com.xiuxian.script"
+
+
+def _scan_games():
+    """扫描模拟器已安装的三方应用，标出已知游戏。"""
+    ok, text = _adb("shell", "pm", "list", "packages", "-3")
+    if not ok:
+        return {"ok": False, "error": text, "games": [],
+                "hint": "需要雷电模拟器在线（adb devices 可见 emulator-5554）；本地 APK 可直接看「安装包库」"}
+    pkgs = sorted({ln.replace("package:", "").strip()
+                   for ln in text.splitlines() if ln.startswith("package:")})
+    games = []
+    for p in pkgs:
+        if p == SCRIPT_PKG:
+            continue
+        label = GAME_LABELS.get(p)
+        games.append({"package": p, "name": label or p, "known": bool(label)})
+    sel = _load_selection()
+    return {"ok": True, "error": "", "games": games, "hint": "",
+            "selected": sel.get("package", "")}
+
+
+def _load_selection():
+    info = _read_data("selection.json", {})
+    data = info["data"] if isinstance(info["data"], dict) else {}
+    return data
+
+
+def _load_accounts():
+    info = _read_data("accounts.json", {"games": {}})
+    data = info["data"] if isinstance(info["data"], dict) else {"games": {}}
+    if not isinstance(data.get("games"), dict):
+        data["games"] = {}
+    return data
+
+
+# ---------------------------------------------------------------- 安装包库
+APK_RE = re.compile(r"^(?P<game>[^\\-]+)-(?P<channel>[^\\-]+)-(?P<ver>[0-9][0-9A-Za-z._]*)$")
+
+
+def _apk_dir():
+    rel = (CONFIG.get("xiuxian", {}) or {}).get("apk_dir") or "安装包库"
+    path = rel if os.path.isabs(rel) else os.path.join(XIUXIAN_ROOT, rel)
+    return os.path.normpath(path)
+
+
+def _scan_apk_library():
+    """扫描本地安装包目录，按 游戏-渠道-版本.apk 解析文件名。"""
+    d = _apk_dir()
+    if not os.path.isdir(d):
+        return {"ok": False, "dir": d, "items": [], "games": [],
+                "error": "安装包目录不存在：%s" % d}
+    items = []
+    for name in sorted(os.listdir(d)):
+        if not name.lower().endswith(".apk"):
+            continue
+        path = os.path.join(d, name)
+        if not os.path.isfile(path):
+            continue
+        stem = os.path.splitext(name)[0]
+        m = APK_RE.match(stem)
+        if m:
+            game, channel, ver = m.group("game"), m.group("channel"), m.group("ver")
+        else:
+            game, channel, ver = stem, "", ""
+        try:
+            st = os.stat(path)
+            size = st.st_size
+            mtime = time.strftime("%Y-%m-%d %H:%M", time.localtime(st.st_mtime))
+        except OSError:
+            size, mtime = 0, ""
+        items.append({
+            "file": name, "game": game, "channel": channel or "默认",
+            "version": ver or "-", "size": size,
+            "size_text": _size_text(size), "mtime": mtime,
+        })
+    items.sort(key=lambda x: x["mtime"], reverse=True)
+    items.sort(key=lambda x: (x["game"], x["channel"]))
+    games = sorted({i["game"] for i in items})
+    return {"ok": True, "dir": d, "items": items, "games": games, "error": ""}
+
+
+# ---------------------------------------------------------------- 仙榜 / 活动
+def _rank_view():
+    """仙榜：按榜单汇总，entries 为空表示尚未采集到游戏内数据。"""
+    info = _read_data("rank.json", {})
+    data = info["data"] if isinstance(info["data"], dict) else {}
+    boards = []
+    for b in (data.get("boards") or []):
+        if not isinstance(b, dict):
+            continue
+        bb = dict(b)
+        bb["entries"] = bb.get("entries") or []
+        bb["ready"] = bool(bb["entries"])
+        boards.append(bb)
+    return {
+        "boards": boards,
+        "source": data.get("source", ""),
+        "note": data.get("note", ""),
+        "updated": data.get("updated", ""),
+        "missing": info["_missing"],
+        "error": info["_error"],
+    }
+
+
+def _activity_view():
+    """活动：进行中/未开始/已结束分组由 start/end 日期推导。"""
+    info = _read_data("activity.json", {})
+    data = info["data"] if isinstance(info["data"], dict) else {}
+    today = time.strftime("%Y-%m-%d")
+    acts = []
+    for a in (data.get("activities") or []):
+        if not isinstance(a, dict):
+            continue
+        aa = dict(a)
+        start, end = aa.get("start") or "", aa.get("end") or ""
+        if end and end < today:
+            state = "ended"
+        elif start and start > today:
+            state = "upcoming"
+        else:
+            state = "running"
+        aa["state"] = state
+        aa["tasks"] = aa.get("tasks") or []
+        acts.append(aa)
+    order = {"running": 0, "upcoming": 1, "ended": 2}
+    acts.sort(key=lambda x: (order.get(x["state"], 3), x.get("end") or ""))
+    return {
+        "activities": acts,
+        "updated": data.get("updated", ""),
+        "note": data.get("note", ""),
+        "today": today,
+        "missing": info["_missing"],
+        "error": info["_error"],
+    }
 
 
 # ---------------------------------------------------------------- 任务拉起
@@ -296,6 +515,27 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send_json({"tasks": [], "error": str(e)})
             return
+        if path == "/api/rank":
+            self._send_json(_rank_view())
+            return
+        if path == "/api/activity":
+            self._send_json(_activity_view())
+            return
+        if path == "/api/packages":
+            self._send_json(_scan_apk_library())
+            return
+        if path == "/api/games":
+            self._send_json(_scan_games())
+            return
+        if path == "/api/accounts":
+            acc = _load_accounts()
+            sel = _load_selection()
+            self._send_json({
+                "games": acc.get("games", {}),
+                "updated": acc.get("updated", ""),
+                "selected": sel.get("package", ""),
+            })
+            return
         if path == "/api/github":
             self._send_json({"github": CONFIG["github"]})
             return
@@ -337,6 +577,58 @@ class Handler(BaseHTTPRequestHandler):
             shot = bool(payload.get("shot", False))
             job_id = start_job(abs_cfg, loops, speed, probe, shot)
             self._send_json({"job_id": job_id})
+            return
+        if path == "/api/game/select":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                payload = json.loads(self.rfile.read(length) or b"{}")
+            except Exception as e:
+                self._send_json({"error": "请求体解析失败: %s" % e}, 400)
+                return
+            pkg = (payload.get("package") or "").strip()
+            if not pkg:
+                self._send_json({"error": "缺少游戏包名"}, 400)
+                return
+            name = (payload.get("name") or GAME_LABELS.get(pkg) or pkg).strip()
+            version = (payload.get("version") or "").strip()
+            _write_data("selection.json", {
+                "package": pkg, "name": name, "version": version,
+                "updated": time.strftime("%Y-%m-%d %H:%M:%S"),
+            })
+            self._send_json({"ok": True, "package": pkg, "name": name, "version": version})
+            return
+        if path == "/api/accounts":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                payload = json.loads(self.rfile.read(length) or b"{}")
+            except Exception as e:
+                self._send_json({"error": "请求体解析失败: %s" % e}, 400)
+                return
+            game = (payload.get("game") or "").strip()
+            accounts = payload.get("accounts")
+            if not game or not isinstance(accounts, list):
+                self._send_json({"error": "缺少游戏或账号列表"}, 400)
+                return
+            clean = []
+            for a in accounts:
+                if not isinstance(a, dict):
+                    continue
+                user = str(a.get("user", "")).strip()
+                if not user:
+                    continue
+                clean.append({
+                    "user": user,
+                    "pass": str(a.get("pass", "")),
+                    "server": str(a.get("server", "")).strip(),
+                    "checked": bool(a.get("checked", True)),
+                })
+            acc = _load_accounts()
+            acc.setdefault("games", {})[game] = clean
+            acc["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            _write_data("accounts.json", acc)
+            checked = len([a for a in clean if a["checked"]])
+            self._send_json({"ok": True, "game": game,
+                             "count": len(clean), "checked": checked})
             return
         self.send_error(404)
 
