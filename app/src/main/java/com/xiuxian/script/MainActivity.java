@@ -157,11 +157,13 @@ public class MainActivity extends Activity {
         btnStop.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                AutoService s = AutoService.get();
-                if (s != null) {
-                    s.stopScript();
+                // 【构建 128】走进程级停止：服务被系统重启后 AutoService.get() 为 null，
+                // 旧写法会提示「服务未连接」而实际脚本还在跑，这是「停不掉」的直接原因。
+                boolean was = AutoService.stopAny();
+                if (!was) {
+                    toast("脚本当前没有在运行");
                 } else {
-                    toast("服务未连接");
+                    toast("已停止");
                 }
                 try {
                     FloatWindow.get(MainActivity.this).refresh();
