@@ -1064,6 +1064,15 @@ public class Pages {
         return wrap;
     }
 
+    /**
+     * 区的显示名。
+     * 参考图第二区写的是「仙界」，而配置里这套分支一直叫「上界」，
+     * 配置存档的键名（如「上界/万仙盟」）不能动，所以只改显示、不动存储。
+     */
+    private static String displayName(String name) {
+        return "上界".equals(name) ? "仙界" : name;
+    }
+
     /** 一张模块卡：模块名 → 总控行 → 该模块的任务 */
     private static View buildGroupCard(Context ctx, final LinearLayout pageBox,
                                        final List<Node> roots, final SharedPreferences sp,
@@ -1072,7 +1081,7 @@ public class Pages {
         LinearLayout card = card(ctx);
 
         TextView title = new TextView(ctx);
-        title.setText(isSection ? node.name + "主任务" : node.name);
+        title.setText(isSection ? displayName(node.name) + "主任务" : node.name);
         title.setTextSize(14);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextColor(Color.parseColor(COLOR_BLUE));
@@ -1106,7 +1115,7 @@ public class Pages {
         row.addView(checkBox(ctx, n.checked, n.isParent() && n.anyChecked() && !n.allChecked()));
 
         TextView label = new TextView(ctx);
-        label.setText(isSection ? n.name + "主任务" : n.name + "总控");
+        label.setText(isSection ? displayName(n.name) + "主任务" : n.name + "总控");
         label.setTextSize(13.5f);
         label.setTypeface(Typeface.DEFAULT_BOLD);
         label.setTextColor(Color.parseColor(COLOR_BLUE));
