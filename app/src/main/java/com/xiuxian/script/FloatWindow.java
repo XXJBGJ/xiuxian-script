@@ -397,6 +397,10 @@ public class FloatWindow {
                 lp.y = maxY;
             }
             wm.updateViewLayout(root, lp);
+            // 【构建 113】窗被拖动/收放时，悬浮球跟着贴到窗右侧，保持整体
+            if (!syncingFromBall) {
+                FloatBall.syncBesideWindow(lp.x, lp.y, w, h);
+            }
         } catch (Throwable ignored) {
         }
     }
@@ -419,19 +423,67 @@ public class FloatWindow {
     }
 
     /** 默认位置：屏幕顶部，水平居中后略微偏左，避免和右上角悬浮球重叠 */
+    /** 【构建 113】合并组的默认落点：整组靠顶部、靠左；窗在左、球紧贴右侧 */
+    public static int[] defaultGroupRect(Context c, int screenW, int screenH) {
+        int w = dp(c, 130);
+        int h = dp(c, 60);
+        int left = dp(c, 6);
+        int top = Math.max(dp(c, 26), (int) (screenH * 0.05f));
+        if (top > Math.max(0, screenH - h)) {
+            top = Math.max(0, screenH - h);
+        }
+        return new int[]{left, top, w, h};
+    }
+
+    private static boolean syncingFromBall = false;
+
+    /**
+     * 【构建 113】运行日志窗与悬浮球合并成一个整体：窗永远贴在球左侧、纵向对齐。
+     * 两个窗口仍然各自独立（点击不会互相穿透），只是位置联动。
+     */
+    public static void syncBesideBall(int bx, int by, int bw, int bh) {
+        FloatWindow f = inst;
+        if (f == null || f.root == null || f.lp == null || !f.showing || syncingFromBall) {
+            return;
+        }
+        syncingFromBall = true;
+        try {
+            int[] wh = f.screen();
+            int w = f.root.getWidth() > 0 ? f.root.getWidth() : f.dpf(130);
+            int h = f.root.getHeight() > 0 ? f.root.getHeight() : f.dpf(60);
+            int bh2 = bh > 0 ? bh : f.dpf(40);
+            f.lp.x = bx - w - f.dpf(2);
+            f.lp.y = by + (bh2 - h) / 2;
+            int peekX = Math.min(f.dpf(20), Math.max(f.dpf(10), w / 3));
+            int peekY = Math.min(f.dpf(20), Math.max(f.dpf(10), h / 3));
+            if (f.lp.x < peekX - w) {
+                f.lp.x = peekX - w;
+            }
+            if (f.lp.x > wh[0] - peekX) {
+                f.lp.x = wh[0] - peekX;
+            }
+            if (f.lp.y < peekY - h) {
+                f.lp.y = peekY - h;
+            }
+            if (f.lp.y > wh[1] - peekY) {
+                f.lp.y = wh[1] - peekY;
+            }
+            f.wm.updateViewLayout(f.root, f.lp);
+        } catch (Throwable ignored) {
+        } finally {
+            syncingFromBall = false;
+        }
+    }
+
     private void placeDefault() {
         if (root == null || lp == null) {
             return;
         }
         try {
             int[] wh = screen();
-            int w = root.getWidth() > 0 ? root.getWidth() : dpf(130);
-            int h = root.getHeight() > 0 ? root.getHeight() : dpf(60);
-            int centerX = (wh[0] - w) / 2;
-            int offset = Math.max(dpf(8), (int) (wh[0] * 0.10f));
-            lp.x = Math.max(0, Math.min(Math.max(0, wh[0] - w), centerX - offset));
-            int top = Math.max(dpf(24), (int) (wh[1] * 0.06f));
-            lp.y = top > Math.max(0, wh[1] - h) ? Math.max(0, wh[1] - h) : top;
+            int[] g = defaultGroupRect(ctx, wh[0], wh[1]);
+            lp.x = g[0];
+            lp.y = g[1];
         } catch (Throwable ignored) {
         }
     }
