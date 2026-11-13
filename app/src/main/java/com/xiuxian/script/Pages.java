@@ -1055,15 +1055,9 @@ public class Pages {
         // 整区只占一张卡片：区名 → 本区全选 → 直属任务 → 各父模块（模块名 → 全选 → 子任务）
         LinearLayout sectionCard = card(ctx);
 
-        TextView title = new TextView(ctx);
-        title.setText(displayName(section.name));
-        title.setTextSize(15);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setTextColor(Color.parseColor(COLOR_BLUE));
-        title.setPadding(0, 0, 0, dp(ctx, 2));
-        sectionCard.addView(title);
-
-        sectionCard.addView(controlRow(ctx, pageBox, roots, sp, cf, section, true, readOnly));
+        // 【构建 117】不再单占一行「全选」：勾选框直接放在区名前面，
+        // 勾凡间 = 勾上凡间下所有父子项，勾仙界 = 勾上仙界下所有父子项。
+        sectionCard.addView(titleRow(ctx, pageBox, roots, sp, section, true, readOnly));
 
         List<Node> leaves = new ArrayList<Node>();
         for (int i = 0; i < section.children.size(); i++) {
@@ -1079,14 +1073,8 @@ public class Pages {
             if (!c.isParent()) {
                 continue;
             }
-            TextView sub = new TextView(ctx);
-            sub.setText(c.name);
-            sub.setTextSize(13);
-            sub.setTypeface(Typeface.DEFAULT_BOLD);
-            sub.setTextColor(Color.parseColor(COLOR_BLUE));
-            sub.setPadding(0, dp(ctx, 7), 0, dp(ctx, 1));
-            sectionCard.addView(sub);
-            sectionCard.addView(controlRow(ctx, pageBox, roots, sp, cf, c, false, readOnly));
+            // 父模块（仙盟/洞府/闯荡/仙都/门派/云游）：勾选框放在模块名前面
+            sectionCard.addView(titleRow(ctx, pageBox, roots, sp, c, false, readOnly));
             List<Node> subLeaves = new ArrayList<Node>();
             for (int j = 0; j < c.children.size(); j++) {
                 Node cc = c.children.get(j);
@@ -1157,6 +1145,50 @@ public class Pages {
     }
 
     /** 总控行：勾上就全选本模块下的所有任务，再点一次全清 */
+    /**
+     * 标题行：勾选框 + 名称（区名或父模块名）。
+     *
+     * 参考图里「全选」是单独一行，占地方又不好看，已按要求删掉；
+     * 现在勾选框直接贴在凡间/仙界，以及仙盟/洞府/闯荡/仙都/门派/云游的名字前面，
+     * 点框或点名字都能勾选，勾父项会把下属子项一起带上。
+     */
+    private static View titleRow(Context ctx, final LinearLayout pageBox,
+                                 final List<Node> roots, final SharedPreferences sp,
+                                 final Node n, final boolean isSection, final boolean readOnly) {
+        LinearLayout row = new LinearLayout(ctx);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setClickable(true);
+        row.setPadding(0, dp(ctx, isSection ? 3 : 7), 0, dp(ctx, isSection ? 2 : 1));
+
+        row.addView(checkBox(ctx, n.checked, n.isParent() && n.anyChecked() && !n.allChecked()));
+
+        TextView label = new TextView(ctx);
+        label.setText(displayName(n.name));
+        label.setTextSize(isSection ? 15 : 13);
+        label.setTypeface(Typeface.DEFAULT_BOLD);
+        label.setTextColor(Color.parseColor(COLOR_BLUE));
+        label.setPadding(dp(ctx, 6), 0, 0, 0);
+        row.addView(label);
+
+        row.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (readOnly) {
+                    toast(ctx, "当前是已保存的配置，勾选已锁定；点「自定义配置」可自由勾选");
+                    return;
+                }
+                setChecked(n, !n.checked);
+                for (int i = 0; i < roots.size(); i++) {
+                    normalize(roots.get(i));
+                }
+                saveCustom(sp, roots);
+                renderDaily(ctx, pageBox);
+            }
+        });
+        return row;
+    }
+
     private static View controlRow(Context ctx, final LinearLayout pageBox,
                                    final List<Node> roots, final SharedPreferences sp,
                                    final SharedPreferences cf, final Node n,
