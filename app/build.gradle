@@ -6,26 +6,51 @@ android {
     namespace 'com.xiuxian.script'
     compileSdk 34
 
+    // 【构建128】固定签名：以前 CI 每次都用临时 debug 密钥，
+    // 导致每次新包的签名都不一样，装新包必须先卸载旧包。
+    // 这里改为读仓库里的固定密钥（tools/debug_keystore.b64，仅调试用途、不含任何账号信息），
+    // 解密到 build 目录后再签名，从此以后每个版本都能直接覆盖安装。
+    def stableKs = file("$buildDir/stable-debug.jks")
+    def stableB64 = file("$rootDir/tools/debug_keystore.b64")
+    if (stableB64.exists()) {
+        stableKs.parentFile.mkdirs()
+        stableKs.bytes = stableB64.text.decodeBase64()
+    }
+    def useStable = stableKs.exists()
+
+    signingConfigs {
+        if (useStable) {
+            stable {
+                storeFile stableKs
+                storePassword 'android'
+                keyAlias 'xiuxian'
+                keyPassword 'android'
+            }
+        }
+    }
+
+
     defaultConfig {
         applicationId "com.xiuxian.script"
         minSdk 24
         targetSdk 34
-        versionCode 1
-        versionName "1.0"
+        // 【构建128】版本号自增，保证能直接覆盖安装上一版
+        versionCode 2
+        versionName "build128"
         // 纯 Java 工程，不打 native 库，Android 7 与 Android 14 同一份 APK 都能装
     }
 
     buildTypes {
         debug {
             minifyEnabled false
-            // 关键：直接用 AGP 自动生成的 debug 签名，不需要你准备 keystore
-            signingConfig signingConfigs.debug
+            // 有固定密钥就用固定密钥，没有就退回 AGP 自动生成的 debug 签名
+            signingConfig useStable ? signingConfigs.stable : signingConfigs.debug
         }
         release {
             minifyEnabled false
             shrinkResources false
-            // 没有 keystore，release 也复用 debug 签名，保证能直接装
-            signingConfig signingConfigs.debug
+            // release 复用同一份签名，保证能直接覆盖安装
+            signingConfig useStable ? signingConfigs.stable : signingConfigs.debug
         }
     }
 
