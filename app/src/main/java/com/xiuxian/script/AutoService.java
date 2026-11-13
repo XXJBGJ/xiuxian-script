@@ -3378,6 +3378,113 @@ public class AutoService extends AccessibilityService {
     }
 
     /** 任务名 → 流程文件名；按关键字匹配，匹配不到返回 null */
+    // ===================== 日常任务：固定顺序 / 起始步 =====================
+
+    /**
+     * 日常任务的固定执行顺序，与用户给定的 1..42 完全一致。
+     *
+     * 这里用「存储名」（界面上显示的名字可能不同，比如存的是 建造/器室/丹炉）。
+     * 用户清单里第 7 项写的是「建设」、第 30 项写的是「天途」，按上下文应是
+     * 仙盟的「建造」和上界的「天庭」，见 DAILY_ALIAS 的对照。
+     */
+    public static final String[] DAILY_ORDER = {
+            "坊市", "行囊", "演武", "慕仙境", "宗门", "吐纳",
+            "建造", "排行榜", "仙盟事务", "天宫幻境", "宴会", "除魔",
+            "修炼", "灵山", "酒肆", "结缘", "器室", "丹炉", "仙界聘书",
+            "仙缘", "出窍", "寻宝", "福地", "凶兽",
+            "遗迹", "论道", "仙界灵宠", "游历", "圣地寻访",
+            "天庭", "集市", "驯兽园", "掌门大厅", "门派历练",
+            "灵契", "九幽", "锁妖塔", "小世界", "虚空异变",
+            "刑天战场", "万古遗迹", "万仙盟"
+    };
+
+    /** 用户清单里的叫法与存储名的对照（存储名沿用旧键，避免已保存的勾选失效） */
+    private static final String[][] DAILY_ALIAS = {
+            {"建设", "建造"},
+            {"仙盟建设", "建造"},
+            {"器道", "器室"},
+            {"丹道", "丹炉"},
+            {"天途", "天庭"}
+    };
+
+    private static String leafOf(String path) {
+        if (path == null) {
+            return "";
+        }
+        return path.substring(path.lastIndexOf('/') + 1).trim();
+    }
+
+    /** 该任务在固定顺序里的位置；不在清单里的排到最后 */
+    private static int dailyOrderIndex(String name) {
+        String key = leafOf(name);
+        for (int i = 0; i < DAILY_ALIAS.length; i++) {
+            if (DAILY_ALIAS[i][0].equals(key)) {
+                key = DAILY_ALIAS[i][1];
+                break;
+            }
+        }
+        for (int i = 0; i < DAILY_ORDER.length; i++) {
+            if (DAILY_ORDER[i].equals(key)) {
+                return i;
+            }
+        }
+        return DAILY_ORDER.length;
+    }
+
+    /**
+     * 把勾选的 CSV 排成固定顺序。
+     * 用户要求「勾选后必须严格按照这个流程进行」，所以不按勾选先后、一律按 1..42 走。
+     */
+    private String[] orderedDailyTasks(String csv) {
+        java.util.ArrayList<String> list = new java.util.ArrayList<String>();
+        if (csv != null) {
+            String[] parts = csv.split(",");
+            for (int i = 0; i < parts.length; i++) {
+                String one = parts[i].trim();
+                if (one.length() > 0) {
+                    list.add(one);
+                }
+            }
+        }
+        java.util.Collections.sort(list, new java.util.Comparator<String>() {
+            @Override
+            public int compare(String a, String b) {
+                return dailyOrderIndex(a) - dailyOrderIndex(b);
+            }
+        });
+        return list.toArray(new String[0]);
+    }
+
+    /**
+     * 步骤面板要显示的流程：只列「已勾选」的日常任务，按固定顺序。
+     * 没勾的就不出现在流程里；启动游戏、输入账号这些默认项也不再列出来。
+     */
+    public String[] dailyStepTitles() {
+        try {
+            android.content.SharedPreferences sp = getSharedPreferences("daily_sel", MODE_PRIVATE);
+            String[] items = orderedDailyTasks(sp.getString("custom_tasks", ""));
+            String[] out = new String[items.length];
+            for (int i = 0; i < items.length; i++) {
+                out[i] = leafOf(items[i]);
+            }
+            return out;
+        } catch (Throwable t) {
+            Logger.e("[日常] 取步骤清单失败: " + t);
+            return new String[0];
+        }
+    }
+
+    /** 从第几个任务开始跑（1 开始） */
+    public int getDailyStartIndex() {
+        int v = getSharedPreferences("daily_sel", MODE_PRIVATE).getInt("start_index", 1);
+        return v < 1 ? 1 : v;
+    }
+
+    public void setDailyStartIndex(int idx) {
+        getSharedPreferences("daily_sel", MODE_PRIVATE).edit()
+                .putInt("start_index", idx < 1 ? 1 : idx).apply();
+    }
+
     private String flowAssetFor(String task) {
         if (task == null || task.length() == 0) {
             return null;
@@ -3630,7 +3737,12 @@ public class AutoService extends AccessibilityService {
         }
         Logger.i("[日常] 启动，当前勾选: " + csv);
         ensureFlowPack();
-        String[] items = csv.split(",");
+        // 【构建 117】严格按固定顺序 1..42 执行，勾选先后不影响次序
+        String[] items = orderedDailyTasks(csv);
+        int skipTo = getDailyStartIndex() - 1;
+        if (skipTo > 0) {
+            Logger.i("[日常] 按要求从第 " + (skipTo + 1) + " 个任务开始");
+        }
         int total = 0;
         int done = 0;
         for (int i = 0; i < items.length; i++) {
@@ -3650,6 +3762,10 @@ public class AutoService extends AccessibilityService {
             }
             idx++;
             String name = raw.substring(raw.lastIndexOf('/') + 1);
+            if (idx <= skipTo) {
+                Logger.i("[日常] 跳过第 " + idx + " 个任务 " + name);
+                continue;
+            }
             String asset = flowAssetFor(name);
             if (asset == null) {
                 Logger.w("[日常] " + name + " 暂无对应流程，跳过");
