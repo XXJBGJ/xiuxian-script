@@ -673,6 +673,11 @@ public class AutoService extends AccessibilityService {
                     Logger.w("日常任务异常: " + t);
                 }
                 Logger.i("账号 " + a.user + " 的日常任务已处理完，准备切下一个账号");
+                // 【构建 113】切账号前必须把游戏进程彻底结束再重进，
+                // 否则游戏停留在上次登录的内存态里，回不到登录界面换不了号。
+                if (running && k < accs.size() - 1) {
+                    restartGameToLogin();
+                }
                 sleep(800);
             }
             // 【构建 66】流程跑完后再扫一遍弹窗，避免结束后一直停在
@@ -788,6 +793,107 @@ public class AutoService extends AccessibilityService {
                 }
             }
         }
+    }
+
+    /**
+     * 【构建 113】把游戏进程杀掉再重新拉起来，让它回到登录界面。
+     * 优先 root 的 am force-stop；没有 root 时退回无障碍的「强行停止」按钮，
+     * 最后再用 am start 唤回前台。
+     */
+    private void restartGameToLogin() {
+        String pkg = "";
+        try {
+            pkg = Games.selectedPkg(this);
+        } catch (Throwable t) {
+            Logger.w("读取游戏包名失败: " + t);
+        }
+        if (pkg == null || pkg.length() == 0) {
+            Logger.w("[切换账号] 没有选中的游戏包名，跳过重启游戏");
+            return;
+        }
+        Logger.i("[切换账号] 结束 " + pkg + " 进程，重新进入游戏回到登录界面");
+        pCurName = "切换账号 · 重启游戏";
+        pCurNote = pkg;
+        pCurStart = System.currentTimeMillis();
+        pCurEnd = 0L;
+
+        boolean killed = false;
+        // 1) root 通道最干净
+        if (execRoot("am force-stop " + pkg)) {
+            killed = true;
+            Logger.i("[切换账号] 已用 root 结束进程");
+        }
+        if (!killed) {
+            // 2) 无障碍「强行停止」
+            killed = forceStopByUi(pkg);
+        }
+        sleep(1500);
+
+        // 3) 重新拉起游戏
+        String startCmd = "monkey -p " + pkg + " -c android.intent.category.LAUNCHER 1";
+        if (!execRoot(startCmd)) {
+            try {
+                android.content.Intent it = getPackageManager().getLaunchIntentForPackage(pkg);
+                if (it != null) {
+                    it.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                    startActivity(it);
+                }
+            } catch (Throwable t) {
+                Logger.w("[切换账号] 拉起游戏失败: " + t);
+            }
+        }
+        Logger.i("[切换账号] 游戏已重新启动，等待登录界面出现");
+        // 等登录界面：多给几次机会，见到「账号登录 / 密码 / 登录」任一特征即可
+        String[] loginKeys = new String[]{"账号登录", "手机登录", "请输入密码", "登录", "账户注册"};
+        for (int i = 0; i < 24 && running; i++) {
+            sleep(1000);
+            if (textPresent(loginKeys)) {
+                Logger.i("[切换账号] 已回到登录界面（等待 " + (i + 1) + " 秒）");
+                return;
+            }
+        }
+        Logger.w("[切换账号] 24 秒内没识别到登录界面，继续下一步");
+    }
+
+    /** 用无障碍在「应用信息」里点强行停止，作为没有 root 时的退路 */
+    private boolean forceStopByUi(String pkg) {
+        try {
+            execRoot("am start -a android.settings.APPLICATION_DETAILS_SETTINGS -d package:" + pkg);
+            sleep(1200);
+            String[] keys = new String[]{"强行停止", "强制停止", "结束运行"};
+            for (int i = 0; i < 8 && running; i++) {
+                if (clickTextKeyword(keys)) {
+                    sleep(900);
+                    String[] ok = new String[]{"确定", "确认", "好"};
+                    clickTextKeyword(ok);
+                    Logger.i("[切换账号] 已通过界面强行停止游戏");
+                    home();
+                    return true;
+                }
+                sleep(700);
+            }
+            home();
+        } catch (Throwable t) {
+            Logger.w("[切换账号] 界面强行停止失败: " + t);
+        }
+        return false;
+    }
+
+    /** 当前界面是否出现其中任意一个文字 */
+    private boolean textPresent(String[] keys) {
+        try {
+            android.view.accessibility.AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root == null) {
+                return false;
+            }
+            for (int i = 0; i < keys.length; i++) {
+                if (findByTextLike(root, keys[i], 0) != null) {
+                    return true;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return false;
     }
 
     // ================= 输入 =================
@@ -3550,10 +3656,20 @@ public class AutoService extends AccessibilityService {
                 continue;
             }
             Logger.i("[日常] 第 " + idx + "/" + total + " 个任务 " + name + " → " + asset);
+            // 【构建 113】把日常任务本身同步到悬浮窗，避免还停在流程的最后一步上
+            pCurName = "日常 " + idx + "/" + total + " · " + name;
+            pCurNote = asset;
+            pCurStart = System.currentTimeMillis();
+            pCurEnd = 0L;
+            pCurElapsedMs = 0L;
             long t0 = System.currentTimeMillis();
             // 每个任务开始先回到游戏主界面附近，避免上一步残留弹窗干扰
             boolean okDone = runFlowAsset(asset);
             long cost = System.currentTimeMillis() - t0;
+            pCurElapsedMs = cost;
+            pCurEnd = System.currentTimeMillis();
+            pCurName = "日常 " + idx + "/" + total + " · " + name + (okDone ? " 完成" : " 中断");
+            pCurNote = "";
             Logger.i("[日常] " + name + (okDone ? " 完成" : " 中断") + "，耗时 "
                     + (cost / 1000.0) + " 秒");
             if (okDone) {
@@ -3565,6 +3681,10 @@ public class AutoService extends AccessibilityService {
             }
         }
         Logger.i("[日常] 结束，完成 " + done + "/" + total + " 个任务");
+        pCurName = "日常已结束 " + done + "/" + total;
+        pCurNote = "";
+        pCurElapsedMs = 0L;
+        pCurEnd = System.currentTimeMillis();
     }
 
 
