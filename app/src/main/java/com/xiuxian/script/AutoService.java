@@ -3194,6 +3194,11 @@ public class AutoService extends AccessibilityService {
             try {
                 Thread.sleep(step);
             } catch (InterruptedException e) {
+                // 关键：不能把中断标志吞掉。
+                // 以前这里直接 return，中断标志被清除，后面的
+                // Thread.currentThread().isInterrupted() 永远返回 false，
+                // 于是「停止」点下去流程还会继续点 600 步，看起来就是停不掉。
+                Thread.currentThread().interrupt();
                 return;
             }
             left -= step;
@@ -3452,7 +3457,7 @@ public class AutoService extends AccessibilityService {
             }
             int cur = first;
             int guard = 0;
-            while (map.containsKey(cur) && guard++ < 600) {
+            while (map.containsKey(cur) && guard++ < 600 && running) {
                 org.json.JSONObject st = map.get(cur);
                 String type = st.optString("type", "");
                 int wait = st.optInt("wait", 300);
@@ -3492,7 +3497,7 @@ public class AutoService extends AccessibilityService {
                 if (wait > 0) {
                     sleep(wait);
                 }
-                if (Thread.currentThread().isInterrupted()) {
+                if (!running || Thread.currentThread().isInterrupted()) {
                     Logger.w("流程被中断: " + asset);
                     return false;
                 }
@@ -3529,6 +3534,10 @@ public class AutoService extends AccessibilityService {
         }
         int idx = 0;
         for (int i = 0; i < items.length; i++) {
+            if (!running || Thread.currentThread().isInterrupted()) {
+                Logger.w("[日常] 收到停止指令，立刻中断剩余任务");
+                break;
+            }
             String raw = items[i].trim();
             if (raw.length() == 0) {
                 continue;
@@ -3550,7 +3559,8 @@ public class AutoService extends AccessibilityService {
             if (okDone) {
                 done++;
             }
-            if (Thread.currentThread().isInterrupted()) {
+            if (!running || Thread.currentThread().isInterrupted()) {
+                Logger.w("[日常] 收到停止指令，立刻中断剩余任务");
                 break;
             }
         }
