@@ -35,6 +35,11 @@ public class MainActivity extends Activity {
     private TextView tvGameVer;
     private Spinner spGame;
     private ScrollView logScroll;
+    private View logPanel;
+    private View btnLogExpand;
+    private View btnLogCollapse;
+    /** 运行日志默认收起，点底部上拉箭头才展开 */
+    private boolean logExpanded = false;
     private String logBuffer = "";
     /** 换行符（避免源码里写转义序列） */
     private static final String NL = String.valueOf((char) 10);
@@ -51,6 +56,28 @@ public class MainActivity extends Activity {
         tvLog = (TextView) findViewById(R.id.tv_log);
         logScroll = (ScrollView) findViewById(R.id.log_scroll);
         tvLog.setMovementMethod(new ScrollingMovementMethod());
+
+        // ---- 运行日志折叠：默认隐藏，底部上拉箭头展开，日志顶部下拉箭头收起 ----
+        logPanel = findViewById(R.id.log_panel);
+        btnLogExpand = findViewById(R.id.btn_log_expand);
+        btnLogCollapse = findViewById(R.id.btn_log_collapse);
+        if (btnLogExpand != null) {
+            btnLogExpand.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    setLogExpanded(true);
+                }
+            });
+        }
+        if (btnLogCollapse != null) {
+            btnLogCollapse.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    setLogExpanded(false);
+                }
+            });
+        }
+        setLogExpanded(false);
 
         // ---- 游戏信息卡：显示当前游戏 + 版本，点整张卡片即可换游戏/扫描 ----
         tvGame = (TextView) findViewById(R.id.tv_game);
@@ -240,6 +267,26 @@ public class MainActivity extends Activity {
     }
 
     // ================= 日志 =================
+
+    /** 展开 / 收起运行日志；收起时页面底部只留一条上拉箭头 */
+    private void setLogExpanded(boolean expanded) {
+        logExpanded = expanded;
+        if (logPanel != null) {
+            logPanel.setVisibility(expanded ? View.VISIBLE : View.GONE);
+        }
+        if (btnLogExpand != null) {
+            // 展开后底部箭头就没用了，藏起来把空间全给日志
+            btnLogExpand.setVisibility(expanded ? View.GONE : View.VISIBLE);
+        }
+        if (expanded && logScroll != null) {
+            logScroll.post(new Runnable() {
+                @Override
+                public void run() {
+                    logScroll.fullScroll(View.FOCUS_DOWN);
+                }
+            });
+        }
+    }
 
     private void appendLog(String line) {
         logBuffer = logBuffer + line + NL;
