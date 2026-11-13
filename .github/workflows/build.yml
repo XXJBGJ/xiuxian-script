@@ -43,6 +43,14 @@ jobs:
           yes | "$SDKM" --licenses > /dev/null 2>&1 || true
           "$SDKM" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
+      # 安装包库的图标必须和真正装上之后桌面上的图标一致：
+      # 用 Android 官方 aapt 读每个游戏 APK 在清单里登记的启动图标，取最高密度那张，
+      # 直接生成 GenIcons.java，避免靠文件名猜图（会取到自适应图标或占位图）。
+      - name: 生成真实游戏图标
+        run: |
+          python3 -m pip install --quiet pillow
+          python3 tools/gen_icons.py
+
       - name: 准备 Gradle（固定 8.7，免去 gradle-wrapper.jar）
         uses: gradle/actions/setup-gradle@v4
         with:
