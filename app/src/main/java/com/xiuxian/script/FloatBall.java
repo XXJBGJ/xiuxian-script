@@ -239,21 +239,64 @@ public class FloatBall {
         }
         try {
             wm.updateViewLayout(root, lp);
+            syncWindow();
         } catch (Throwable ignored) {
         }
     }
 
-    /** 摆到屏幕顶部右侧（留一点边距，避开状态栏） */
+    private static boolean followParent = false;
+
+    /** 【构建 113】球一动，运行日志窗就贴到球左侧，两者像一个整体 */
+    private void syncWindow() {
+        if (followParent) {
+            return;
+        }
+        try {
+            FloatWindow.syncBesideBall(lp.x, lp.y, lp.width, lp.height);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 【构建 113】窗被拖动时，球跟着贴到窗右侧，保持整组不散开 */
+    public static void syncBesideWindow(int wx, int wy, int ww, int whh) {
+        FloatBall b = instance;
+        if (b == null || b.root == null || b.lp == null) {
+            return;
+        }
+        followParent = true;
+        try {
+            int[] scr = b.screen();
+            int bw = b.lp.width > 0 ? b.lp.width : FloatWindow.dp(b.ctx, BALL_DP + 10);
+            int bh = b.lp.height > 0 ? b.lp.height : FloatWindow.dp(b.ctx, BALL_DP + 10);
+            int ww2 = ww > 0 ? ww : FloatWindow.dp(b.ctx, 130);
+            int wh2 = whh > 0 ? whh : FloatWindow.dp(b.ctx, 60);
+            b.lp.x = wx + ww2 + FloatWindow.dp(b.ctx, 2);
+            b.lp.y = wy + (wh2 - bh) / 2;
+            int peekX = Math.max(FloatWindow.dp(b.ctx, 6), bw * PEEK_PX_RATIO / 100);
+            int peekY = Math.max(FloatWindow.dp(b.ctx, 6), bh * PEEK_PX_RATIO / 100);
+            b.lp.x = clamp(b.lp.x, peekX - bw, scr[0] - peekX);
+            b.lp.y = clamp(b.lp.y, peekY - bh, scr[1] - bh - FloatWindow.dp(b.ctx, 10));
+            b.wm.updateViewLayout(b.root, b.lp);
+        } catch (Throwable ignored) {
+        } finally {
+            followParent = false;
+        }
+    }
+
+    /** 摆到整组的默认落点：运行日志窗在左，球紧贴其右侧 */
     private void placeTopRight() {
         try {
             int[] wh = screen();
             int w = lp.width > 0 ? lp.width : FloatWindow.dp(ctx, BALL_DP + 10);
             int h = lp.height > 0 ? lp.height : FloatWindow.dp(ctx, BALL_DP + 10);
-            dockedLeft = false;
-            lp.x = Math.max(0, wh[0] - w - FloatWindow.dp(ctx, 6));
-            lp.y = FloatWindow.dp(ctx, 30);
+            int[] g = FloatWindow.defaultGroupRect(ctx, wh[0], wh[1]);
+            dockedLeft = true;
+            // 窗在左，球紧贴窗右侧；纵向和窗居中对齐
+            lp.x = g[0] + g[2] + FloatWindow.dp(ctx, 2);
+            lp.y = g[1] + (g[3] - h) / 2;
             lp.y = clamp(lp.y, 0, Math.max(0, wh[1] - h));
             wm.updateViewLayout(root, lp);
+            syncWindow();
         } catch (Throwable ignored) {
         }
     }
@@ -293,6 +336,7 @@ public class FloatBall {
                         lp.y = clamp(startY + dy, peekY - lp.height, wh[1] - lp.height - FloatWindow.dp(ctx, 10));
                         try {
                             wm.updateViewLayout(root, lp);
+            syncWindow();
                         } catch (Throwable ignored) {
                         }
                     }
