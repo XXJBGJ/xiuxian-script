@@ -57,6 +57,10 @@ public class FloatWindow {
     private boolean showing = false;
     private boolean collapsed = false;
 
+    // 【构建 117】锁定浮窗尺寸：停止后正文变短也不许缩小，保证和启动时一样大
+    private int lockW = 0;
+    private int lockH = 0;
+
     private WindowManager.LayoutParams lp;
     private FloatConfig cfg;
 
@@ -418,6 +422,46 @@ public class FloatWindow {
             }
             applyLook(root);
             clampAndApply();
+            lockSize();
+            // 首帧布局还没完成时量不到真实尺寸，布局完成后再钉一次
+            root.post(new Runnable() {
+                @Override
+                public void run() {
+                    lockSize();
+                }
+            });
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * 【构建 117】把浮窗尺寸钉住。
+     *
+     * 之前窗口是 WRAP_CONTENT，文字一短（例如停止后只剩一行状态）窗口就跟着收缩，
+     * 看起来就是「一停止脚本悬浮窗就变小」。这里记住显示以来出现过的最大尺寸，
+     * 之后只许长不许缩，停止后仍与启动时一样大。
+     */
+    private void lockSize() {
+        if (root == null || lp == null || !showing || collapsed) {
+            return;
+        }
+        try {
+            int w = root.getWidth();
+            int h = root.getHeight();
+            if (w > lockW) {
+                lockW = w;
+            }
+            if (h > lockH) {
+                lockH = h;
+            }
+            if (lockW <= 0 || lockH <= 0) {
+                return;
+            }
+            if (lp.width != lockW || lp.height != lockH) {
+                lp.width = lockW;
+                lp.height = lockH;
+                wm.updateViewLayout(root, lp);
+            }
         } catch (Throwable ignored) {
         }
     }
@@ -926,37 +970,39 @@ public class FloatWindow {
             Logger.e("无障碍服务未连接");
             return;
         }
-        final String[] titles = s.stepTitles();
+        // 【构建 117】只列日常页已勾选的任务（按固定 1..42 顺序），
+        // 没勾的不出现，启动游戏/输入账号这类默认项也不再列出。
+        final String[] titles = s.dailyStepTitles();
         if (titles.length == 0) {
-            Logger.e("当前流程没有可选的步骤");
+            Logger.e("日常页还没有勾选任务，勾选后再长按浮窗");
             return;
         }
+
+        final int cur = Math.max(1, s.getDailyStartIndex());
 
         LinearLayout box = new LinearLayout(ctx);
         box.setOrientation(LinearLayout.VERTICAL);
 
         TextView title = new TextView(ctx);
-        title.setText("选择从哪个任务开始");
+        title.setText("从第几项开始（当前 " + cur + "）");
         title.setTextSize(18f);
         title.setTextColor(0xFF1F2328);
         title.setPadding(0, 0, 0, dpf(6));
         box.addView(title);
 
         TextView tip = new TextView(ctx);
-        tip.setText("长按浮窗进入此处；默认从最开始执行，下次启动生效");
+        tip.setText("点一下即可选定并关闭；下次启动按此起点执行，之前已做的会跳过");
         tip.setTextSize(12f);
         tip.setTextColor(0xFF8A9099);
         tip.setPadding(0, 0, 0, dpf(6));
         box.addView(tip);
 
-        final int cur = Math.max(0, s.getStartStep());
-
-        // 第一项：默认从最初开始
-        box.addView(choiceRow("默认：从最开始执行", cur == 0, new View.OnClickListener() {
+        // 第一项：从第 1 项开始
+        box.addView(choiceRow("从第 1 项开始（默认）", cur == 1, new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 try {
-                    s.setStartStep(0);
+                    s.setDailyStartIndex(1);
                     closePanel();
                 } catch (Throwable t) {
                     Logger.e("设置起始任务失败: " + t);
@@ -966,11 +1012,13 @@ public class FloatWindow {
 
         for (int i = 0; i < titles.length; i++) {
             final int oneBased = i + 1;
-            box.addView(choiceRow(titles[i], cur == oneBased, new View.OnClickListener() {
+            String name = titles[i] != null && titles[i].length() > 0 ? titles[i] : ("第 " + oneBased + " 项");
+            box.addView(choiceRow(oneBased + ". " + name, cur == oneBased, new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
                     try {
-                        s.setStartStep(oneBased);
+                        s.setDailyStartIndex(oneBased);
+                        Logger.i("已设置从第 " + oneBased + " 项开始");
                         closePanel();
                     } catch (Throwable t) {
                         Logger.e("设置起始任务失败: " + t);
