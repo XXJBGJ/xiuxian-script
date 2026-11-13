@@ -14,7 +14,9 @@ android {
     def stableB64 = file("$rootDir/tools/debug_keystore.b64")
     if (stableB64.exists()) {
         stableKs.parentFile.mkdirs()
-        stableKs.bytes = stableB64.text.decodeBase64()
+        // 先去掉所有空白：网页端保存的文件末尾常被补一个换行，直接解码会失败
+        def rawB64 = stableB64.text.replaceAll("\\s", "")
+        stableKs.bytes = rawB64.decodeBase64()
     }
     def useStable = stableKs.exists()
 
