@@ -34,8 +34,15 @@ public class AutoService extends AccessibilityService {
 
     private static volatile AutoService instance;
 
-    private volatile boolean running = false;
-    private Thread worker;
+    /**
+     * 【构建 128】running / worker 改成进程级 static。
+     * 原来它们是实例字段：无障碍服务被系统回收或重启后 instance 被置空，
+     * 但工作线程是按设计继续跑的，此时 AutoService.get() 返回 null，
+     * 悬浮球和脚本页的「停止」都拿不到实例，点了等于没点——脚本再也停不下来。
+     * 改成 static 后，即使服务实例断开，也能直接停掉工作线程。
+     */
+    private static volatile boolean running = false;
+    private static Thread worker;
     private JSONObject currentConfig;
 
     /** 当前正在跑的账号（账号循环用） */
@@ -75,7 +82,7 @@ public class AutoService extends AccessibilityService {
     public volatile long pStepGapMs = 0L;
 
     /** 暂停标志：暂停时不推进流程，但线程不退出 */
-    private volatile boolean paused = false;
+    private static volatile boolean paused = false;
     /** 从第几个步骤开始跑（0 表示从第一个开始，长按悬浮窗可改） */
     private volatile int startStepIndex = 0;
 
@@ -509,6 +516,51 @@ public class AutoService extends AccessibilityService {
         if (worker != null) {
             worker.interrupt();
         }
+        resetProgressNow();
+    }
+
+    /**
+     * 【构建 128】进程级停止：不依赖服务实例。
+     * 服务被系统重启（例如「进入游戏」时无障碍被重启）后 instance 为 null，
+     * 但工作线程还在跑，这时必须走这里才能停掉。
+     *
+     * @return 之前是否真的在运行
+     */
+    public static boolean stopAny() {
+        boolean was = running;
+        running = false;
+        paused = false;
+        Thread t = worker;
+        if (t != null) {
+            try {
+                t.interrupt();
+            } catch (Throwable ignored) {
+            }
+        }
+        AutoService ins = instance;
+        if (ins != null) {
+            ins.resetProgressNow();
+        }
+        Logger.w(was ? "收到停止指令（进程级）" : "脚本当前没有运行");
+        return was;
+    }
+
+    /** 【构建 128】进程级判断是否在运行，不受服务实例是否存活影响 */
+    public static boolean isRunningAny() {
+        return running;
+    }
+
+    /** 停止后立刻把悬浮窗上的进度复位，不用等工作线程走到 finally */
+    private void resetProgressNow() {
+        pCurName = "已停止";
+        pCurNote = "";
+        pCurStart = 0L;
+        pCurEnd = 0L;
+        pCurElapsedMs = 0L;
+        pPhase = "";
+        pNextName = "";
+        pNextNote = "";
+        pNextMs = 0L;
     }
 
     /** 暂停：线程不退出，只是不再推进步骤 */
@@ -3728,6 +3780,80 @@ public class AutoService extends AccessibilityService {
     }
 
     /** 跑用户勾选的日常任务：按关键字逐个匹配流程并执行 */
+    /**
+     * 【构建 128】日常任务的「静默启动门控」。
+     *
+     * 需求：日常任务不要一上来就点，必须先确保游戏已经真的进去了（主界面就绪）再开始。
+     * 做法：
+     *   1. 已经在主界面就立刻返回，不打扰；
+     *   2. 否则按包名静默拉起游戏（不弹任何确认框、不需要人工点）；
+     *   3. 循环「关弹窗 → 判断主界面」，直到主界面就绪或超时；
+     *   4. 全程受 running / 中断标志控制，随时可停。
+     *
+     * @return true 表示确认已在游戏主界面
+     */
+    private boolean ensureInGameBeforeDaily() {
+        // 1) 已经在主界面，直接开工
+        try {
+            if (mainUiReady() && !loginCardStill()) {
+                Logger.i("[日常] 已在游戏主界面，直接开始执行日常");
+                return true;
+            }
+        } catch (Throwable ignored) {
+        }
+        if (!running) {
+            return false;
+        }
+
+        // 2) 静默拉起游戏（按当前选中游戏的包名，避免换皮串台）
+        try {
+            String pkg = Games.selectedPkg(this);
+            if (pkg != null && pkg.trim().length() > 0) {
+                Logger.i("[日常] 静默启动游戏: " + pkg + "，进入游戏完成后再开始");
+                AppFinder.launchByPackage(this, pkg);
+            } else {
+                Logger.w("[日常] 没有选中游戏包名，跳过静默启动，直接等待当前界面");
+            }
+        } catch (Throwable t) {
+            Logger.w("[日常] 静默启动游戏失败: " + t.getClass().getSimpleName());
+        }
+
+        // 3) 等主界面就绪：期间持续关弹窗（公告/离线收益/活动页）
+        long end = System.currentTimeMillis() + 180000L;
+        int popups = 0;
+        int tick = 0;
+        while (running && System.currentTimeMillis() < end) {
+            if (Thread.currentThread().isInterrupted()) {
+                return false;
+            }
+            tick++;
+            pCurName = "等待进入游戏";
+            pCurNote = "进游戏完成后才开始日常";
+            pCurStart = System.currentTimeMillis();
+            try {
+                if (dismissPopups()) {
+                    popups++;
+                    sleep(600);
+                    continue;
+                }
+            } catch (Throwable ignored) {
+            }
+            if (!loginCardStill() && mainUiReady()) {
+                Logger.i("[日常] 已进入游戏主界面，开始执行日常"
+                        + (popups > 0 ? "（等待期间关掉弹窗 " + popups + " 个）" : ""));
+                pCurName = "日常准备就绪";
+                pCurNote = "";
+                return true;
+            }
+            sleep(800);
+        }
+        if (!running) {
+            return false;
+        }
+        Logger.w("[日常] 等待进入游戏超时（180s），仍按当前界面继续执行，请留意界面状态");
+        return false;
+    }
+
     private void runDailyTasks() {
         android.content.SharedPreferences sp = getSharedPreferences("daily_sel", MODE_PRIVATE);
         String csv = sp.getString("custom_tasks", "");
@@ -3736,6 +3862,13 @@ public class AutoService extends AccessibilityService {
             return;
         }
         Logger.i("[日常] 启动，当前勾选: " + csv);
+        // 【构建 128】静默启动门控：必须确认进入游戏后才开始跑日常
+        if (!ensureInGameBeforeDaily()) {
+            if (!running) {
+                Logger.w("[日常] 等待进入游戏期间收到停止指令，本次日常不执行");
+                return;
+            }
+        }
         ensureFlowPack();
         // 【构建 117】严格按固定顺序 1..42 执行，勾选先后不影响次序
         String[] items = orderedDailyTasks(csv);
