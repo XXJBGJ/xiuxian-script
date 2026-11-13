@@ -257,7 +257,7 @@ public class FloatBall {
         }
     }
 
-    /** 【构建 113】窗被拖动时，球跟着贴到窗右侧，保持整组不散开 */
+    /** 【构建 128】窗被拖动时，球跟着贴到窗「内侧右边缘」，保持球在窗框里面 */
     public static void syncBesideWindow(int wx, int wy, int ww, int whh) {
         FloatBall b = instance;
         if (b == null || b.root == null || b.lp == null) {
@@ -268,14 +268,12 @@ public class FloatBall {
             int[] scr = b.screen();
             int bw = b.lp.width > 0 ? b.lp.width : FloatWindow.dp(b.ctx, BALL_DP + 10);
             int bh = b.lp.height > 0 ? b.lp.height : FloatWindow.dp(b.ctx, BALL_DP + 10);
-            int ww2 = ww > 0 ? ww : FloatWindow.dp(b.ctx, 130);
+            int ww2 = ww > 0 ? ww : FloatWindow.dp(b.ctx, FloatWindow.WIN_W_DP);
             int wh2 = whh > 0 ? whh : FloatWindow.dp(b.ctx, 60);
-            b.lp.x = wx + ww2 + FloatWindow.dp(b.ctx, 2);
+            // 球的左边缘 = 窗右边缘 - 球位宽 + 与边框留 2dp；纵向在窗内居中
+            b.lp.x = wx + ww2 - FloatWindow.dp(b.ctx, FloatWindow.BALL_SLOT_DP)
+                    + Math.max(0, (FloatWindow.dp(b.ctx, FloatWindow.BALL_SLOT_DP) - bw) / 2);
             b.lp.y = wy + (wh2 - bh) / 2;
-            int peekX = Math.max(FloatWindow.dp(b.ctx, 6), bw * PEEK_PX_RATIO / 100);
-            int peekY = Math.max(FloatWindow.dp(b.ctx, 6), bh * PEEK_PX_RATIO / 100);
-            b.lp.x = clamp(b.lp.x, peekX - bw, scr[0] - peekX);
-            b.lp.y = clamp(b.lp.y, peekY - bh, scr[1] - bh - FloatWindow.dp(b.ctx, 10));
             b.wm.updateViewLayout(b.root, b.lp);
         } catch (Throwable ignored) {
         } finally {
@@ -362,20 +360,27 @@ public class FloatBall {
     /** 单击：启动 / 停止 */
     private void tap() {
         try {
+            // 【构建 128】判断与停止都不再依赖服务实例：
+            // 服务被系统重启后 AutoService.get() 是 null，
+            // 旧写法会直接走「启动」分支，看起来就是「点停止反而重启了脚本」。
+            if (AutoService.isRunningAny()) {
+                AutoService.stopAny();
+                applyLook();
+                try {
+                    FloatWindow.get(ctx).refresh();
+                } catch (Throwable ignored) {
+                }
+                return;
+            }
             AutoService s = AutoService.get();
             if (s == null) {
                 Logger.e("无障碍服务未连接，无法启动脚本");
                 return;
             }
-            if (s.isRunning()) {
-                s.stopScript();
-                applyLook();
-            } else {
-                // 启动脚本时自动打开运行日志悬浮窗 + 悬浮球常驻
-                s.startScript();
-                FloatWindow.get(ctx).show();
-                applyLook();
-            }
+            // 启动脚本时自动打开运行日志悬浮窗 + 悬浮球常驻
+            s.startScript();
+            FloatWindow.get(ctx).show();
+            applyLook();
         } catch (Throwable t) {
             Logger.e("悬浮球启停失败: " + t);
         }
