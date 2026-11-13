@@ -385,8 +385,10 @@ public class FloatBall {
     private void openStepChooser() {
         try {
             final AutoService s = AutoService.get();
-            final String[] titles = s == null ? new String[0] : s.stepTitles();
-            final int curStart = s == null ? 1 : Math.max(1, s.getStartStep());
+            // 【构建 117】这里列的是「日常页已勾选的任务」，按固定 1..42 顺序，
+            // 没勾的不出现；启动游戏/输入账号这类每次必做的默认项不再列出来。
+            final String[] titles = s == null ? new String[0] : s.dailyStepTitles();
+            final int curStart = s == null ? 1 : Math.max(1, s.getDailyStartIndex());
 
             final LinearLayout panel = new LinearLayout(ctx);
             panel.setOrientation(LinearLayout.VERTICAL);
@@ -398,7 +400,7 @@ public class FloatBall {
             panel.setPadding(pad, pad, pad, pad);
 
             TextView title = new TextView(ctx);
-            title.setText("从第几步开始（当前默认 " + curStart + "）");
+            title.setText("从第几项开始（当前默认 " + curStart + "）");
             title.setTextColor(Color.WHITE);
             title.setTextSize(13f);
             title.setPadding(0, 0, 0, FloatWindow.dp(ctx, 6));
@@ -411,29 +413,62 @@ public class FloatBall {
             sv.addView(list, new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT, FloatWindow.dp(ctx, 150)));
 
-            final TextView[] holders = new TextView[]{null};
-            int total = Math.max(1, titles.length);
-            for (int i = 0; i < total; i++) {
+            // 一行一个任务。点击后当场把圆点/颜色换成选中态，再收起面板，
+            // 这样点下去立刻有反应，不会像之前那样「点了没动静」。
+            final TextView[] rows = new TextView[titles.length];
+            final String[] names = new String[titles.length];
+            for (int i = 0; i < titles.length; i++) {
                 final int stepOne = i + 1;
+                String name = titles[i] != null && titles[i].length() > 0 ? titles[i] : ("第 " + stepOne + " 项");
+                names[i] = name;
                 TextView row = new TextView(ctx);
-                String name = i < titles.length && titles[i] != null ? titles[i] : ("第 " + stepOne + " 步");
                 row.setText((stepOne == curStart ? "● " : "○ ") + stepOne + ". " + name);
                 row.setTextColor(stepOne == curStart ? 0xFF64B5F6 : 0xFFDDDDDD);
                 row.setTextSize(12f);
-                row.setPadding(0, FloatWindow.dp(ctx, 5), 0, FloatWindow.dp(ctx, 5));
+                row.setPadding(0, FloatWindow.dp(ctx, 6), 0, FloatWindow.dp(ctx, 6));
+                row.setClickable(true);
                 row.setOnClickListener(new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
                         if (s != null) {
-                            s.setStartStep(stepOne);
+                            s.setDailyStartIndex(stepOne);
                         }
-                        Logger.i("已设置从第 " + stepOne + " 步开始");
-                        if (holders[0] != null) {
-                            holders[0].setText("已选择：第 " + stepOne + " 步（点击空白处关闭）");
+                        Logger.i("已设置从第 " + stepOne + " 项「" + names[stepOne - 1] + "」开始");
+                        // 立刻刷成选中态，给用户明确反馈
+                        for (int k = 0; k < rows.length; k++) {
+                            if (rows[k] == null) {
+                                continue;
+                            }
+                            boolean on = (k + 1) == stepOne;
+                            rows[k].setText((on ? "● " : "○ ") + (k + 1) + ". " + names[k]);
+                            rows[k].setTextColor(on ? 0xFF64B5F6 : 0xFFDDDDDD);
                         }
+                        // 这里没有统一的 toast 封装，直接弹一个，让点击有明确反馈
+                        try {
+                            android.widget.Toast.makeText(ctx,
+                                    "已选择从第 " + stepOne + " 项「" + names[stepOne - 1] + "」开始",
+                                    android.widget.Toast.LENGTH_SHORT).show();
+                        } catch (Throwable ignored) {
+                        }
+                        // 反馈看清后再收起面板
+                        panel.postDelayed(new Runnable() {
+                            @Override
+                            public void run() {
+                                overlayPanel(false, null);
+                            }
+                        }, 350);
                     }
                 });
+                rows[i] = row;
                 list.addView(row);
+            }
+
+            if (titles.length == 0) {
+                TextView empty = new TextView(ctx);
+                empty.setText("日常页还没有勾选任务，勾选后再长按这里");
+                empty.setTextColor(0xFFFFAB91);
+                empty.setTextSize(12f);
+                list.addView(empty);
             }
             panel.addView(sv);
 
@@ -468,10 +503,6 @@ public class FloatBall {
                 }
             });
             panel.addView(close);
-
-            holders[0] = new TextView(ctx);
-            holders[0].setVisibility(View.GONE);
-            panel.addView(holders[0]);
 
             overlayPanel(true, panel);
         } catch (Throwable t) {
