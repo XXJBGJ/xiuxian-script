@@ -42,6 +42,13 @@ public class RootGrant {
         }
         busy = true;
         try {
+            // 【构建 128】先只用「纯读」接口判断：两个权限都已经就绪就直接返回，
+            // 完全不执行 su。以前每次进 App / 每次点启动都会走一遍 su，
+            // 于是「已授予超级用户权限」的授权提示反复弹出。现在只要权限齐了永不弹。
+            if (isAccessibilityOn(c) && canDrawOverlay(c)) {
+                lastOk = true;
+                return true;
+            }
             boolean acc = grantAccessibility(c);
             boolean ovl = grantOverlay(c);
             lastOk = acc && ovl;
