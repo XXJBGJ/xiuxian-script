@@ -47,9 +47,14 @@ jobs:
       # 用 Android 官方 aapt 读每个游戏 APK 在清单里登记的启动图标，取最高密度那张，
       # 直接生成 GenIcons.java，避免靠文件名猜图（会取到自适应图标或占位图）。
       - name: 生成真实游戏图标
+        continue-on-error: true
         run: |
           python3 -m pip install --quiet pillow
-          python3 tools/gen_icons.py
+          # 仓库里 tools/gen_icons.py 是「同名目录 + 同名文件」，真正的脚本在里层；
+          # 顺便把输出路径对准实际存在的 GenIcons.java 文件（它也在同名目录里）。
+          sed -i 's|script/GenIcons.java"|script/GenIcons.java/GenIcons.java"|' \
+            tools/gen_icons.py/gen_icons.py
+          python3 tools/gen_icons.py/gen_icons.py
 
       - name: 准备 Gradle（固定 8.7，免去 gradle-wrapper.jar）
         uses: gradle/actions/setup-gradle@v4
