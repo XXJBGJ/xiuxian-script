@@ -122,18 +122,18 @@ public class Pages {
         List<Node> roots = new ArrayList<Node>();
 
         Node fanjian = node("凡间",
-                node("坊市"),
                 node("行囊"),
+                node("坊市"),
                 node("演武"),
                 node("慕仙境"),
                 node("宗门"),
-                node("吐纳"),
                 node("修炼"),
+                node("吐纳"),
                 node("仙盟",
                         node("建造"), node("排行榜"), node("仙盟事务"),
                         node("天宫幻境"), node("宴会"), node("除魔")),
                 node("洞府",
-                        node("灵山"), node("酒肆"), node("结缘"),
+                        node("灵山"), node("结缘"), node("酒肆"),
                         node("器室"), node("丹炉"), node("仙界聘书")),
                 node("闯荡",
                         node("仙缘"), node("出窍"), node("寻宝"),
@@ -1073,6 +1073,26 @@ public class Pages {
         return "上界".equals(name) ? "仙界" : name;
     }
 
+    /**
+     * 任务名的显示别名。
+     *
+     * 参考图上写的是「仙盟建设 / 器道 / 丹道」，而这对内一直是
+     * 「建造 / 器室 / 丹炉」——这些名字同时是勾选存档的键和天途流程的匹配词，
+     * 直接改名会让已保存的勾选和内置流程对不上，所以只换显示文字。
+     */
+    private static String displayTask(String name) {
+        if ("建造".equals(name)) {
+            return "仙盟建设";
+        }
+        if ("器室".equals(name)) {
+            return "器道";
+        }
+        if ("丹炉".equals(name)) {
+            return "丹道";
+        }
+        return name;
+    }
+
     /** 一张模块卡：模块名 → 总控行 → 该模块的任务 */
     private static View buildGroupCard(Context ctx, final LinearLayout pageBox,
                                        final List<Node> roots, final SharedPreferences sp,
@@ -1167,7 +1187,7 @@ public class Pages {
         int used = 0;
         for (int i = 0; i < leaves.size(); i++) {
             Node n = leaves.get(i);
-            int w = boxW + (int) Math.ceil(paint.measureText(n.name));
+            int w = boxW + (int) Math.ceil(paint.measureText(displayTask(n.name)));
             if (line == null || used + w + gap > avail) {
                 line = new LinearLayout(ctx);
                 line.setOrientation(LinearLayout.HORIZONTAL);
@@ -1203,7 +1223,7 @@ public class Pages {
         cell.addView(checkBoxSized(ctx, n.checked, false, 17));
 
         TextView label = new TextView(ctx);
-        label.setText(n.name);
+        label.setText(displayTask(n.name));
         // 字号统一，格子宽度已经按最长名字算过，不会被截断
         label.setTextSize(12.5f);
         label.setSingleLine(true);
