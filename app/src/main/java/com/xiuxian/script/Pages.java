@@ -1052,16 +1052,51 @@ public class Pages {
                                      final List<Node> roots, final SharedPreferences sp,
                                      final SharedPreferences cf, final Node section,
                                      int depth, final boolean readOnly) {
-        LinearLayout wrap = new LinearLayout(ctx);
-        wrap.setOrientation(LinearLayout.VERTICAL);
-        wrap.addView(buildGroupCard(ctx, pageBox, roots, sp, cf, section, true, readOnly));
+        // 整区只占一张卡片：区名 → 本区全选 → 直属任务 → 各父模块（模块名 → 全选 → 子任务）
+        LinearLayout sectionCard = card(ctx);
+
+        TextView title = new TextView(ctx);
+        title.setText(displayName(section.name));
+        title.setTextSize(15);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setTextColor(Color.parseColor(COLOR_BLUE));
+        title.setPadding(0, 0, 0, dp(ctx, 2));
+        sectionCard.addView(title);
+
+        sectionCard.addView(controlRow(ctx, pageBox, roots, sp, cf, section, true, readOnly));
+
+        List<Node> leaves = new ArrayList<Node>();
         for (int i = 0; i < section.children.size(); i++) {
             Node c = section.children.get(i);
-            if (c.isParent()) {
-                wrap.addView(buildGroupCard(ctx, pageBox, roots, sp, cf, c, false, readOnly));
+            if (!c.isParent()) {
+                leaves.add(c);
             }
         }
-        return wrap;
+        addFlow(ctx, sectionCard, pageBox, roots, sp, cf, leaves, readOnly);
+
+        for (int i = 0; i < section.children.size(); i++) {
+            Node c = section.children.get(i);
+            if (!c.isParent()) {
+                continue;
+            }
+            TextView sub = new TextView(ctx);
+            sub.setText(c.name);
+            sub.setTextSize(13);
+            sub.setTypeface(Typeface.DEFAULT_BOLD);
+            sub.setTextColor(Color.parseColor(COLOR_BLUE));
+            sub.setPadding(0, dp(ctx, 7), 0, dp(ctx, 1));
+            sectionCard.addView(sub);
+            sectionCard.addView(controlRow(ctx, pageBox, roots, sp, cf, c, false, readOnly));
+            List<Node> subLeaves = new ArrayList<Node>();
+            for (int j = 0; j < c.children.size(); j++) {
+                Node cc = c.children.get(j);
+                if (!cc.isParent()) {
+                    subLeaves.add(cc);
+                }
+            }
+            addFlow(ctx, sectionCard, pageBox, roots, sp, cf, subLeaves, readOnly);
+        }
+        return sectionCard;
     }
 
     /**
@@ -1101,7 +1136,7 @@ public class Pages {
         LinearLayout card = card(ctx);
 
         TextView title = new TextView(ctx);
-        title.setText(isSection ? displayName(node.name) + "主任务" : node.name);
+        title.setText(isSection ? displayName(node.name) : node.name);
         title.setTextSize(14);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextColor(Color.parseColor(COLOR_BLUE));
@@ -1135,7 +1170,7 @@ public class Pages {
         row.addView(checkBox(ctx, n.checked, n.isParent() && n.anyChecked() && !n.allChecked()));
 
         TextView label = new TextView(ctx);
-        label.setText(isSection ? displayName(n.name) + "主任务" : n.name + "总控");
+        label.setText("全选");
         label.setTextSize(13.5f);
         label.setTypeface(Typeface.DEFAULT_BOLD);
         label.setTextColor(Color.parseColor(COLOR_BLUE));
@@ -1174,35 +1209,30 @@ public class Pages {
         if (leaves.isEmpty()) {
             return;
         }
-        float density = ctx.getResources().getDisplayMetrics().density;
-        android.graphics.Paint paint = new android.graphics.Paint();
-        paint.setTextSize(12.5f * density);
-        paint.setTypeface(Typeface.DEFAULT);
-
-        int boxW = dp(ctx, 17) + dp(ctx, 4);
-        int gap = dp(ctx, 12);
-        int avail = ctx.getResources().getDisplayMetrics().widthPixels - dp(ctx, 40);
-
-        LinearLayout line = null;
-        int used = 0;
-        for (int i = 0; i < leaves.size(); i++) {
-            Node n = leaves.get(i);
-            int w = boxW + (int) Math.ceil(paint.measureText(displayTask(n.name)));
-            if (line == null || used + w + gap > avail) {
-                line = new LinearLayout(ctx);
-                line.setOrientation(LinearLayout.HORIZONTAL);
-                line.setGravity(Gravity.CENTER_VERTICAL);
-                line.setPadding(0, dp(ctx, 2), 0, dp(ctx, 2));
-                card.addView(line);
-                used = 0;
+        // 和仙榜一致：按字数决定一行放几个，格子等宽，上下左右对齐
+        int avail = ctx.getResources().getDisplayMetrics().widthPixels - dp(ctx, 46);
+        int i = 0;
+        while (i < leaves.size()) {
+            int cols = colsFor(leaves.get(i).name);
+            LinearLayout row = new LinearLayout(ctx);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(0, dp(ctx, 1), 0, dp(ctx, 1));
+            card.addView(row, new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT));
+            int used = 0;
+            while (i < leaves.size() && used < cols) {
+                Node n = leaves.get(i);
+                if (used > 0 && colsFor(n.name) != cols) {
+                    break;
+                }
+                View cell = buildCell(ctx, pageBox, roots, sp, cf, n, readOnly);
+                row.addView(cell, new LinearLayout.LayoutParams(avail / cols,
+                        LinearLayout.LayoutParams.WRAP_CONTENT));
+                used++;
+                i++;
             }
-            View cell = buildCell(ctx, pageBox, roots, sp, cf, n, readOnly);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT);
-            lp.rightMargin = gap;
-            line.addView(cell, lp);
-            used += w + gap;
         }
     }
 
