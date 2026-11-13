@@ -61,6 +61,11 @@ public class FloatWindow {
     private int lockW = 0;
     private int lockH = 0;
 
+    /** 【构建 128】浮窗固定宽度（dp）：足够放下四行信息，不再随文字长短伸缩 */
+    public static final int WIN_W_DP = 210;
+    /** 【构建 128】右侧留给悬浮球的宽度（dp）：球嵌在窗框内部右侧 */
+    public static final int BALL_SLOT_DP = 44;
+
     private WindowManager.LayoutParams lp;
     private FloatConfig cfg;
 
@@ -201,8 +206,10 @@ public class FloatWindow {
         tvBody = new TextView(ctx);
         tvBody.setTextColor(0xFFFFFFFF);
         tvBody.setTextSize(cfg.fontSize);
-        tvBody.setPadding(dpf(4), dpf(2), dpf(4), dpf(2));
+        tvBody.setPadding(dpf(6), dpf(4), dpf(4), dpf(4));
         bodyBox.addView(tvBody);
+        // 【构建 128】右侧留出球位，让悬浮球显示在窗框内部而不是贴在窗外
+        bodyBox.setPadding(0, 0, dpf(BALL_SLOT_DP), 0);
         box.addView(bodyBox, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
@@ -264,8 +271,10 @@ public class FloatWindow {
         bodyBox.setOnTouchListener(touch);
 
         // ---- 窗口参数：底部左对齐 ----
+        // 【构建 128】宽度固定：以前 WRAP_CONTENT 会随文字长短伸缩，
+        // 停止后文字变短窗口就缩成一小条，看起来就是「悬浮窗太小、看不全」。
         lp = new WindowManager.LayoutParams(
-                WindowManager.LayoutParams.WRAP_CONTENT,
+                dpf(WIN_W_DP),
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
@@ -446,15 +455,13 @@ public class FloatWindow {
             return;
         }
         try {
-            int w = root.getWidth();
+            // 【构建 128】宽度恒定为 WIN_W_DP，高度只记最大值，保证停止后也完整显示四行
+            lockW = dpf(WIN_W_DP);
             int h = root.getHeight();
-            if (w > lockW) {
-                lockW = w;
-            }
             if (h > lockH) {
                 lockH = h;
             }
-            if (lockW <= 0 || lockH <= 0) {
+            if (lockH <= 0) {
                 return;
             }
             if (lp.width != lockW || lp.height != lockH) {
@@ -469,8 +476,8 @@ public class FloatWindow {
     /** 默认位置：屏幕顶部，水平居中后略微偏左，避免和右上角悬浮球重叠 */
     /** 【构建 113】合并组的默认落点：整组靠顶部、靠左；窗在左、球紧贴右侧 */
     public static int[] defaultGroupRect(Context c, int screenW, int screenH) {
-        int w = dp(c, 130);
-        int h = dp(c, 60);
+        int w = dp(c, WIN_W_DP);
+        int h = dp(c, 96);
         int left = dp(c, 6);
         int top = Math.max(dp(c, 26), (int) (screenH * 0.05f));
         if (top > Math.max(0, screenH - h)) {
@@ -496,7 +503,8 @@ public class FloatWindow {
             int w = f.root.getWidth() > 0 ? f.root.getWidth() : f.dpf(130);
             int h = f.root.getHeight() > 0 ? f.root.getHeight() : f.dpf(60);
             int bh2 = bh > 0 ? bh : f.dpf(40);
-            f.lp.x = bx - w - f.dpf(2);
+            // 【构建 128】球嵌在窗框内部右侧：窗口左边 = 球左边 - 窗宽 + 球位宽
+            f.lp.x = bx - w + f.dpf(BALL_SLOT_DP) - Math.max(0, (f.dpf(BALL_SLOT_DP) - bw) / 2);
             f.lp.y = by + (bh2 - h) / 2;
             int peekX = Math.min(f.dpf(20), Math.max(f.dpf(10), w / 3));
             int peekY = Math.min(f.dpf(20), Math.max(f.dpf(10), h / 3));
@@ -544,59 +552,60 @@ public class FloatWindow {
             out.append("轮间隔 ").append(fmtSec(s.pLoopGapMs)).append("s").append(nl);
         }
 
-        StringBuilder cur = new StringBuilder();
-        if (c.showCurStep && s.pCurName != null && s.pCurName.length() > 0) {
-            cur.append(s.pCurName);
+        // 【构建 128】固定四行，且每行标签独立、内容各占一行：
+        //   当前步骤 / 当前备注 / 当前等待 / 下个步骤 / 下个备注
+        // 以前把备注和等待时间挤在同一行，窄浮窗里被截断，看起来就是「显示不全」。
+        // 现在无论运行还是停止，这四类信息都单独成行完整显示。
+        String curName = s.pCurName == null ? "" : s.pCurName.trim();
+        String curNote = s.pCurNote == null ? "" : s.pCurNote.trim();
+        String nextName = s.pNextName == null ? "" : s.pNextName.trim();
+        String nextNote = s.pNextNote == null ? "" : s.pNextNote.trim();
+
+        if (curName.length() == 0) {
+            curName = s.isPaused() ? "已暂停" : (AutoService.isRunningAny() ? "运行中" : "已停止");
         }
-        if (c.showCurNote && s.pCurNote != null && s.pCurNote.length() > 0) {
-            if (cur.length() > 0) {
-                cur.append(':');
-            }
-            cur.append(s.pCurNote);
-        }
-        if (c.showCurWait && s.pCurStart > 0) {
-            // 显示这一步「已经花了多久」，按真实时间实时增长
+
+        // 第 1 行：当前步骤
+        out.append("当前: ").append(curName).append(nl);
+        // 第 2 行：当前步骤备注
+        out.append("备注: ").append(curNote.length() == 0 ? "--" : curNote).append(nl);
+        // 第 3 行：当前等待时间（停止后保留最后一次耗时，不清零成空白）
+        String wait;
+        if (s.pCurStart > 0) {
             long used = s.pCurElapsedMs > 0 ? s.pCurElapsedMs
                     : (System.currentTimeMillis() - s.pCurStart);
-            if (used >= 500) {
-                cur.append('(').append(fmtSec(used)).append("s)");
-            }
+            wait = fmtSec(used) + "s";
+        } else if (s.pCurElapsedMs > 0) {
+            wait = fmtSec(s.pCurElapsedMs) + "s";
+        } else if (s.pNextMs > 0) {
+            wait = fmtSec(s.pNextMs) + "s";
+        } else {
+            wait = "--";
         }
-        if (c.showCurTimes && s.pStepTimes > 0) {
-            cur.append(" x").append(s.pStepTimes);
-            if (s.pStepGapMs >= 500) {
-                cur.append('/').append(fmtSec(s.pStepGapMs)).append("s");
-            }
-        }
-        if (c.showCurStep && s.pPhase != null && s.pPhase.length() > 0) {
-            if (cur.length() > 0) {
-                cur.append(" | ");
-            }
-            cur.append(s.pPhase);
-        }
-        if (cur.length() > 0) {
-            out.append("当前:").append(cur).append(nl);
-        }
-
+        out.append("等待: ").append(wait).append(nl);
+        // 第 4 行：下个步骤 + 其备注
         StringBuilder next = new StringBuilder();
-        if (c.showNextStep && s.pNextName != null && s.pNextName.length() > 0) {
-            next.append(s.pNextName);
+        next.append(nextName.length() == 0 ? "--" : nextName);
+        if (nextNote.length() > 0) {
+            next.append(" / ").append(nextNote);
         }
-        if (c.showNextNote && s.pNextNote != null && s.pNextNote.length() > 0) {
-            if (next.length() > 0) {
-                next.append('/');
+        out.append("下步: ").append(next).append(nl);
+
+        // 可选的附加信息放在四行之后，不影响主体四行
+        if (c.showCurTimes && s.pStepTimes > 0) {
+            out.append("次数: x").append(s.pStepTimes);
+            if (s.pStepGapMs >= 500) {
+                out.append(" / ").append(fmtSec(s.pStepGapMs)).append("s");
             }
-            next.append(s.pNextNote);
-        }
-        if (next.length() > 0) {
-            out.append("下步:").append(next);
+            if (s.pPhase != null && s.pPhase.length() > 0) {
+                out.append(" | ").append(s.pPhase);
+            }
+            out.append(nl);
+        } else if (c.showCurStep && s.pPhase != null && s.pPhase.length() > 0) {
+            out.append(s.pPhase).append(nl);
         }
 
-        String t = out.toString().trim();
-        if (t.length() == 0) {
-            t = s.isPaused() ? "已暂停" : (s.isRunning() ? "运行中" : "等待开始");
-        }
-        return t;
+        return out.toString().trim();
     }
 
     private String fmtSec(long ms) {
