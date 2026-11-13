@@ -223,32 +223,69 @@
                 </LinearLayout>
             </ScrollView>
 
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:paddingTop="6dp"
-                android:paddingBottom="4dp"
-                android:text="运行日志（每一行是一次动作，越往下越新）"
-                android:textSize="12sp"
-                android:textStyle="bold" />
-
-            <ScrollView
-                android:id="@+id/log_scroll"
+            <!-- 运行日志面板：默认隐藏，点底部「上拉箭头」才展开 -->
+            <LinearLayout
+                android:id="@+id/log_panel"
                 android:layout_width="match_parent"
                 android:layout_height="0dp"
                 android:layout_weight="1"
-                android:background="#FF111111">
+                android:orientation="vertical"
+                android:visibility="gone">
 
+                <!-- 日志顶部：下拉箭头，点一下把日志收起来 -->
                 <TextView
-                    android:id="@+id/tv_log"
+                    android:id="@+id/btn_log_collapse"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:padding="6dp"
-                    android:textColor="#FF33DD33"
-                    android:textIsSelectable="true"
-                    android:textSize="11sp"
-                    android:typeface="monospace" />
-            </ScrollView>
+                    android:background="#FFF2F2F2"
+                    android:gravity="center"
+                    android:paddingTop="2dp"
+                    android:paddingBottom="2dp"
+                    android:text="▼  收起运行日志"
+                    android:textColor="#FF6A6A6A"
+                    android:textSize="11.5sp" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:paddingTop="4dp"
+                    android:paddingBottom="3dp"
+                    android:text="运行日志（每一行是一次动作，越往下越新）"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+
+                <ScrollView
+                    android:id="@+id/log_scroll"
+                    android:layout_width="match_parent"
+                    android:layout_height="0dp"
+                    android:layout_weight="1"
+                    android:background="#FF111111">
+
+                    <TextView
+                        android:id="@+id/tv_log"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:padding="6dp"
+                        android:textColor="#FF33DD33"
+                        android:textIsSelectable="true"
+                        android:textSize="11sp"
+                        android:typeface="monospace" />
+                </ScrollView>
+            </LinearLayout>
+
+            <!-- 页面最底部：上拉箭头，点一下展开运行日志 -->
+            <TextView
+                android:id="@+id/btn_log_expand"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="#FFF7F7F7"
+                android:gravity="center"
+                android:paddingTop="6dp"
+                android:paddingBottom="6dp"
+                android:text="▲  上拉查看运行日志"
+                android:textColor="#FF2E8B57"
+                android:textSize="12.5sp"
+                android:textStyle="bold" />
         </LinearLayout>
 
         <!-- ================= 日常页 ================= -->
