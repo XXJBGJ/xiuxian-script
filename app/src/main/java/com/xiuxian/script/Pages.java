@@ -42,6 +42,8 @@ public class Pages {
     private static final String COLOR_TEXT = "#FF1F1F1F";
     private static final String COLOR_MUTED = "#FF8A8A8A";
     private static final String COLOR_OK = "#FF2E8B57";
+    /** 参考图里「模块名 / 总控」用的蓝色 */
+    private static final String COLOR_BLUE = "#FF1F5FA8";
     private static final String COLOR_WARN = "#FFC9822F";
     private static final String COLOR_LINE = "#FFE2E2E2";
     private static final String COLOR_CARD = "#FFFFFFFF";
@@ -1038,92 +1040,140 @@ public class Pages {
     /** 网格一行放几个任务 */
     private static final int GRID_COLS = 4;
 
-    /** 一个区（凡间 / 上界）：标题行 + 下面所有子模块 */
+    /**
+     * 一个区（凡间 / 上界）。
+     *
+     * 按参考图拆成多张白色卡片：
+     *   第 1 张是「本区主任务」：区名标题 + 总控勾选 + 本区直属任务
+     *   之后每个带子项的模块（仙盟 / 洞府 / 闯荡 / 仙都 / 云游 …）各占一张卡片
+     * 卡片内部统一是：左上角模块名 → 总控复选框 → 任务整行排列、上下对齐。
+     */
     private static View buildSection(Context ctx, final LinearLayout pageBox,
                                      final List<Node> roots, final SharedPreferences sp,
                                      final SharedPreferences cf, final Node section,
                                      int depth, final boolean readOnly) {
+        LinearLayout wrap = new LinearLayout(ctx);
+        wrap.setOrientation(LinearLayout.VERTICAL);
+        wrap.addView(buildGroupCard(ctx, pageBox, roots, sp, cf, section, true, readOnly));
+        for (int i = 0; i < section.children.size(); i++) {
+            Node c = section.children.get(i);
+            if (c.isParent()) {
+                wrap.addView(buildGroupCard(ctx, pageBox, roots, sp, cf, c, false, readOnly));
+            }
+        }
+        return wrap;
+    }
+
+    /** 一张模块卡：模块名 → 总控行 → 该模块的任务 */
+    private static View buildGroupCard(Context ctx, final LinearLayout pageBox,
+                                       final List<Node> roots, final SharedPreferences sp,
+                                       final SharedPreferences cf, final Node node,
+                                       final boolean isSection, final boolean readOnly) {
         LinearLayout card = card(ctx);
-        card.addView(buildRow(ctx, pageBox, roots, sp, cf, section, depth, true, readOnly));
-        LinearLayout body = new LinearLayout(ctx);
-        body.setOrientation(LinearLayout.VERTICAL);
-        addChildren(ctx, body, pageBox, roots, sp, cf, section, depth + 1, readOnly);
-        card.addView(body);
+
+        TextView title = new TextView(ctx);
+        title.setText(isSection ? node.name + "主任务" : node.name);
+        title.setTextSize(14);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setTextColor(Color.parseColor(COLOR_BLUE));
+        title.setPadding(0, 0, 0, dp(ctx, 2));
+        card.addView(title);
+
+        card.addView(controlRow(ctx, pageBox, roots, sp, cf, node, isSection, readOnly));
+
+        List<Node> leaves = new ArrayList<Node>();
+        for (int i = 0; i < node.children.size(); i++) {
+            Node c = node.children.get(i);
+            if (!c.isParent()) {
+                leaves.add(c);
+            }
+        }
+        addFlow(ctx, card, pageBox, roots, sp, cf, leaves, readOnly);
         return card;
     }
 
-    /**
-     * 排布一个父项下面的所有子项。
-     *
-     * 只有「这一层全是叶子」时才铺成每行 4 个的格子；
-     * 只要这一层里混着有下级的项，就全部按整行渲染。
-     * 否则像「天庭」「刑天战场」这种没有子项的同级项会被塞进
-     * 上一项的格子区，看起来像是别人的子项。
-     */
-    private static void addChildren(Context ctx, LinearLayout body, final LinearLayout pageBox,
-                                    final List<Node> roots, final SharedPreferences sp,
-                                    final SharedPreferences cf, final Node parent,
-                                    int depth, final boolean readOnly) {
-        // 同一层里，叶子任务按名字长度排成网格（2字4个/3字3个/4~5字2个/≥6字1个），
-        // 遇到父项就先落网格再单独占一行，避免每个叶子各占一整行把页面拉得很长。
-        List<Node> buf = new ArrayList<Node>();
-        for (int i = 0; i < parent.children.size(); i++) {
-            Node c = parent.children.get(i);
-            if (c.isParent()) {
-                if (!buf.isEmpty()) {
-                    flushGrid(ctx, body, pageBox, roots, sp, cf, buf, depth, readOnly);
-                    buf = new ArrayList<Node>();
+    /** 总控行：勾上就全选本模块下的所有任务，再点一次全清 */
+    private static View controlRow(Context ctx, final LinearLayout pageBox,
+                                   final List<Node> roots, final SharedPreferences sp,
+                                   final SharedPreferences cf, final Node n,
+                                   final boolean isSection, final boolean readOnly) {
+        LinearLayout row = new LinearLayout(ctx);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setClickable(true);
+        row.setPadding(0, dp(ctx, 5), dp(ctx, 4), dp(ctx, 5));
+
+        row.addView(checkBox(ctx, n.checked, n.isParent() && n.anyChecked() && !n.allChecked()));
+
+        TextView label = new TextView(ctx);
+        label.setText(isSection ? n.name + "主任务" : n.name + "总控");
+        label.setTextSize(13.5f);
+        label.setTypeface(Typeface.DEFAULT_BOLD);
+        label.setTextColor(Color.parseColor(COLOR_BLUE));
+        label.setPadding(dp(ctx, 8), 0, 0, 0);
+        row.addView(label, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        row.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (readOnly) {
+                    toast(ctx, "当前是已保存的配置，勾选已锁定；点「自定义配置」可自由勾选");
+                    return;
                 }
-                body.addView(buildRow(ctx, pageBox, roots, sp, cf, c, depth, false, readOnly));
-                addChildren(ctx, body, pageBox, roots, sp, cf, c, depth + 1, readOnly);
-            } else {
-                buf.add(c);
+                setChecked(n, !n.checked);
+                for (int i = 0; i < roots.size(); i++) {
+                    normalize(roots.get(i));
+                }
+                saveCustom(sp, roots);
+                renderDaily(ctx, pageBox);
             }
-        }
-        if (!buf.isEmpty()) {
-            flushGrid(ctx, body, pageBox, roots, sp, cf, buf, depth, readOnly);
-        }
+        });
+        return row;
     }
 
     /**
-     * 把攒下的叶子项铺成格子。
+     * 任务排布：按参考图自然流式铺开。
      *
-     * 每行放几个不再写死，而是看名字长度（colsFor）：
-     * 2 字 4 个、3 字 3 个、4~5 字 2 个、6 字以上 1 个。
-     * 长度不一样的项另起一行，免得长名字被挤窄后截断。
+     * 每格宽度跟着名字走（不再一律等宽），一行放得下几个就放几个，
+     * 放不下才换到下一行；换行后左边对齐，和参考图完全一致。
      */
-    private static void flushGrid(Context ctx, LinearLayout body, final LinearLayout pageBox,
-                                  final List<Node> roots, final SharedPreferences sp,
-                                  final SharedPreferences cf, final List<Node> leaves,
-                                  int depth, final boolean readOnly) {
+    private static void addFlow(Context ctx, LinearLayout card, final LinearLayout pageBox,
+                                final List<Node> roots, final SharedPreferences sp,
+                                final SharedPreferences cf, final List<Node> leaves,
+                                final boolean readOnly) {
         if (leaves.isEmpty()) {
             return;
         }
-        int start = 0;
-        while (start < leaves.size()) {
-            int cols = colsFor(leaves.get(start).name);
-            int end = start;
-            while (end < leaves.size() && end - start < cols
-                    && colsFor(leaves.get(end).name) == cols) {
-                end++;
-            }
-            LinearLayout line = new LinearLayout(ctx);
-            line.setOrientation(LinearLayout.HORIZONTAL);
-            line.setGravity(Gravity.CENTER_VERTICAL);
-            line.setPadding(dp(ctx, 4 + depth * 10), 0, dp(ctx, 4), dp(ctx, 2));
+        float density = ctx.getResources().getDisplayMetrics().density;
+        android.graphics.Paint paint = new android.graphics.Paint();
+        paint.setTextSize(12.5f * density);
+        paint.setTypeface(Typeface.DEFAULT);
 
-            for (int k = 0; k < cols; k++) {
-                int idx = start + k;
-                if (idx < end) {
-                    line.addView(buildCell(ctx, pageBox, roots, sp, cf,
-                            leaves.get(idx), readOnly, cols));
-                } else {
-                    View gap = new View(ctx);
-                    line.addView(gap, new LinearLayout.LayoutParams(0, 1, 1f));
-                }
+        int boxW = dp(ctx, 17) + dp(ctx, 4);
+        int gap = dp(ctx, 12);
+        int avail = ctx.getResources().getDisplayMetrics().widthPixels - dp(ctx, 40);
+
+        LinearLayout line = null;
+        int used = 0;
+        for (int i = 0; i < leaves.size(); i++) {
+            Node n = leaves.get(i);
+            int w = boxW + (int) Math.ceil(paint.measureText(n.name));
+            if (line == null || used + w + gap > avail) {
+                line = new LinearLayout(ctx);
+                line.setOrientation(LinearLayout.HORIZONTAL);
+                line.setGravity(Gravity.CENTER_VERTICAL);
+                line.setPadding(0, dp(ctx, 2), 0, dp(ctx, 2));
+                card.addView(line);
+                used = 0;
             }
-            body.addView(line);
-            start = end;
+            View cell = buildCell(ctx, pageBox, roots, sp, cf, n, readOnly);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            lp.rightMargin = gap;
+            line.addView(cell, lp);
+            used += w + gap;
         }
     }
 
@@ -1131,28 +1181,28 @@ public class Pages {
     private static View buildCell(Context ctx, final LinearLayout pageBox,
                                   final List<Node> roots, final SharedPreferences sp,
                                   final SharedPreferences cf, final Node n,
-                                  final boolean readOnly, int cols) {
+                                  final boolean readOnly) {
         LinearLayout cell = new LinearLayout(ctx);
         cell.setOrientation(LinearLayout.HORIZONTAL);
         cell.setGravity(Gravity.CENTER_VERTICAL);
         cell.setClickable(true);
-        cell.setPadding(dp(ctx, 1), dp(ctx, 2), dp(ctx, 1), dp(ctx, 2));
-        cell.setLayoutParams(new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        cell.setPadding(dp(ctx, 0), dp(ctx, 2), dp(ctx, 2), dp(ctx, 2));
+        cell.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        cell.addView(checkBoxSized(ctx, n.checked, false, cols >= 4 ? 15 : 17));
+        cell.addView(checkBoxSized(ctx, n.checked, false, 17));
 
         TextView label = new TextView(ctx);
         label.setText(n.name);
-        // 字号跟着列数走：格子越窄字越小，四列时最紧，
-        // 否则「仙界灵宠」「掌门大厅」这种名字会被截成「仙界灵…」。
-        label.setTextSize(fontFor(cols));
+        // 字号统一，格子宽度已经按最长名字算过，不会被截断
+        label.setTextSize(12.5f);
         label.setSingleLine(true);
-        label.setEllipsize(android.text.TextUtils.TruncateAt.END);
         label.setTextColor(Color.parseColor(n.checked ? COLOR_TEXT : "#FF3A3A3A"));
         label.setPadding(dp(ctx, 3), 0, 0, 0);
-        cell.addView(label, new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        cell.addView(label, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
 
         cell.setOnClickListener(new View.OnClickListener() {
             @Override
