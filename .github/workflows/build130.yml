@@ -1,0 +1,122 @@
+name: Build APK (build130)
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+      - name: 应用 build130 补丁（7 项改动）
+        run: |
+          test -f tools/build130.patch.b64 || { echo "缺少 tools/build130.patch.b64"; exit 1; }
+          base64 -d tools/build130.patch.b64 | gunzip > "$RUNNER_TEMP/build130.patch"
+          wc -l "$RUNNER_TEMP/build130.patch"
+          git apply --check "$RUNNER_TEMP/build130.patch"
+          git apply "$RUNNER_TEMP/build130.patch"
+          echo "补丁已应用"
+          ls -l app/src/main/java/com/xiuxian/script/RootShell.java
+          grep -c RootShell app/src/main/java/com/xiuxian/script/AutoService.java
+
+
+      - name: 安装 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # 图标是二进制文件，无法直接粘贴进仓库，改存为 base64 文本，构建时还原
+      - name: 还原应用图标
+        run: |
+          test -f tools/app_icon.b64 || { echo "缺少 tools/app_icon.b64"; exit 1; }
+          mkdir -p app/src/main/res/mipmap-xxxhdpi
+          base64 -d tools/app_icon.b64 > app/src/main/res/mipmap-xxxhdpi/ic_launcher.jpg
+          ls -l app/src/main/res/mipmap-xxxhdpi/ic_launcher.jpg
+          file app/src/main/res/mipmap-xxxhdpi/ic_launcher.jpg || true
+
+      # runner 自带 Android SDK，直接用它自带的 sdkmanager 装需要的组件
+      - name: 安装 SDK 平台与构建工具
+        run: |
+          SDK_ROOT="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
+          echo "SDK_ROOT=$SDK_ROOT"
+          SDKM=$(ls -d "$SDK_ROOT"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1)
+          echo "sdkmanager=$SDKM"
+          if [ -z "$SDKM" ]; then
+            echo "找不到 sdkmanager"; exit 1
+          fi
+          yes | "$SDKM" --licenses > /dev/null 2>&1 || true
+          "$SDKM" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+
+      # 安装包库的图标必须和真正装上之后桌面上的图标一致：
+      # 用 Android 官方 aapt 读每个游戏 APK 在清单里登记的启动图标，取最高密度那张，
+      # 直接生成 GenIcons.java，避免靠文件名猜图（会取到自适应图标或占位图）。
+      - name: 生成真实游戏图标
+        continue-on-error: true
+        run: |
+          python3 -m pip install --quiet pillow
+          # 仓库里 tools/gen_icons.py 是「同名目录 + 同名文件」，真正的脚本在里层；
+          # 顺便把输出路径对准实际存在的 GenIcons.java 文件（它也在同名目录里）。
+          sed -i 's|script/GenIcons.java"|script/GenIcons.java/GenIcons.java"|' \
+            tools/gen_icons.py/gen_icons.py
+          python3 tools/gen_icons.py/gen_icons.py
+
+      - name: 准备 Gradle（固定 8.7，免去 gradle-wrapper.jar）
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: 编译 Debug APK
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      # 产物三个名字：
+      # dist/修仙脚本工具.apk  —— 给人看的正式名，安装后在桌面显示「修仙脚本工具」
+      # dist/xiuxian-script.apk —— Release 附件名（GitHub 只接受 ASCII，中文会被剥离成 default.apk）
+      # dist/修仙脚本工具.zip   —— 我们自己打的包，zip 里带 UTF-8 文件名标记，
+      #                            解压后就是「修仙脚本工具.apk」，不会显示成乱码
+      - name: 整理产物
+        run: |
+          mkdir -p dist
+          SRC=$(find app/build/outputs/apk/debug -name "*.apk" -type f | head -1)
+          echo "源文件: $SRC"
+          if [ -z "$SRC" ]; then
+            echo "没有找到 APK"; exit 1
+          fi
+          cp "$SRC" "dist/修仙脚本工具.apk"
+          cp "$SRC" "dist/xiuxian-script.apk"
+          cd dist
+          # -X 去掉多余属性，Info-ZIP 会给中文名打上 UTF-8 标记，Windows 解压不乱码
+          zip -X -q "修仙脚本工具.zip" "修仙脚本工具.apk"
+          cd ..
+          ls -l dist/
+          unzip -l "dist/修仙脚本工具.zip"
+
+      # artifact 名用纯 ASCII，避免 GitHub 打包下载时把中文名压成乱码；
+      # 里面装的是我们自己打的 zip，解开后 apk 名仍是「修仙脚本工具.apk」
+      - name: 上传 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: xiuxian-script-tool
+          path: dist/修仙脚本工具.zip
+          if-no-files-found: error
+
+      # 额外发一个 Release：手机上点链接就能直接下载，不用登录 GitHub
+      - name: 发布到 Release（可直接下载）
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build130-${{ github.run_number }}
+          name: 修仙脚本工具 build130 构建 ${{ github.run_number }}
+          body: |
+            自动构建产物，点下面的 apk 直接下载安装。
+
+            - 自动登录：先按颜色识别出账号框、密码框和登录按钮，再填账号密码并点登录
+            - 适配任意分辨率/DPI：优先按界面颜色与文字定位，不依赖固定坐标
+            - 支持按游戏分别管理账号，勾选后逐个账号运行
+          files: dist/xiuxian-script.apk
+          make_latest: true
