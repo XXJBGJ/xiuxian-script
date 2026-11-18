@@ -1,0 +1,78 @@
+name: build134
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: apply build134 patch
+        run: |
+          test -f tools/build134.patch.b64 || { echo "missing tools/build134.patch.b64"; exit 1; }
+          base64 -d tools/build134.patch.b64 | gunzip > /tmp/b.patch
+          wc -l /tmp/b.patch
+          git apply --check /tmp/b.patch
+          git apply /tmp/b.patch
+          echo applied
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: restore icon
+        run: |
+          mkdir -p app/src/main/res/mipmap-xxxhdpi
+          base64 -d tools/app_icon.b64 > app/src/main/res/mipmap-xxxhdpi/ic_launcher.jpg
+
+      - name: sdk
+        run: |
+          SDK_ROOT="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
+          SDKM=$(ls -d "$SDK_ROOT"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1)
+          if [ -z "$SDKM" ]; then echo "no sdkmanager"; exit 1; fi
+          yes | "$SDKM" --licenses > /dev/null 2>&1 || true
+          "$SDKM" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+
+      - name: gen icons
+        continue-on-error: true
+        run: |
+          python3 -m pip install --quiet pillow
+          sed -i 's|script/GenIcons.java"|script/GenIcons.java/GenIcons.java"|' \
+            tools/gen_icons.py/gen_icons.py
+          python3 tools/gen_icons.py/gen_icons.py
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: dist
+        run: |
+          mkdir -p dist
+          SRC=$(find app/build/outputs/apk/debug -name "*.apk" | head -1)
+          if [ -z "$SRC" ]; then echo "no apk"; exit 1; fi
+          cp "$SRC" dist/xiuxian-script.apk
+          ls -l dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build134
+          path: dist/xiuxian-script.apk
+          if-no-files-found: error
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build134-${{ github.run_number }}
+          name: xiuxian-script build134 ${{ github.run_number }}
+          body: |
+            build134: 浮窗高度=悬浮球高度、运行中浮窗不可点击（悬浮球仍可操作）
+          files: dist/xiuxian-script.apk
+          make_latest: true
