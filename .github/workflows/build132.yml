@@ -1,0 +1,50 @@
+name: build132
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: apply patch
+        run: |
+          base64 -d tools/build132.patch.b64 | gunzip > /tmp/b.patch
+          git apply --check /tmp/b.patch
+          git apply /tmp/b.patch
+          echo applied
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: restore icon
+        run: |
+          mkdir -p app/src/main/res/mipmap-xxxhdpi
+          base64 -d tools/app_icon.b64 > app/src/main/res/mipmap-xxxhdpi/ic_launcher.jpg
+      - name: sdk
+        run: |
+          SDK_ROOT="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
+          SDKM=$(ls -d "$SDK_ROOT"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1)
+          yes | "$SDKM" --licenses > /dev/null 2>&1 || true
+          "$SDKM" "platforms;android-34" "build-tools;34.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+      - run: gradle assembleDebug --no-daemon
+      - name: dist
+        run: |
+          mkdir -p dist
+          SRC=$(find app/build/outputs/apk/debug -name "*.apk" | head -1)
+          cp "$SRC" dist/xiuxian-script.apk
+          cp "$SRC" "dist/xiuxian-script-tool.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build132
+          path: dist/xiuxian-script.apk
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build132-${{ github.run_number }}
+          files: dist/xiuxian-script.apk
